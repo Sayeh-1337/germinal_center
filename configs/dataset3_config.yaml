@@ -1,0 +1,66 @@
+# Dataset 3 Configuration
+# DLBCL ROI chromatin correlation analysis
+dataset_name: "dataset3"
+input_dir: "data/dataset3/images/cropped"
+output_dir: "data/dataset3/processed"
+
+# Preprocessing configuration
+preprocessing:
+  channels:
+    dapi: 2  # Blue channel (RGB index 2, which is third channel)
+  quantile_normalization:
+    enabled: true
+    quantiles: [0.01, 0.998]
+    mask_dir: null  # No mask for this dataset
+
+# Nuclear segmentation using StarDist
+segmentation:
+  prob_thresh: 0.43
+  use_pretrained: true
+
+# Feature extraction
+feature_extraction:
+  cell_segmentation:
+    enabled: false  # No cell segmentation for this dataset
+  extract_spatial: true
+  protein_measurement:
+    enabled: false  # No protein channels
+
+# Analysis configuration
+analysis:
+  metadata: "data/dataset3/DLBCL_ROIs_DZ_ranking.csv"
+  
+  # Global analysis parameters
+  correlation_threshold: 0.8
+  random_seed: 1234
+  generate_plots: true
+  n_permutations: 100000  # More permutations for smaller sample size
+  
+  analyses:
+    # Basic statistics (no cell types in this dataset)
+    - type: "cell_type"
+      enabled: true
+      description: "Generate feature statistics"
+    
+    # T-cell interaction - not applicable
+    - type: "tcell_interaction"
+      enabled: false
+    
+    # Boundary analysis - not applicable
+    - type: "boundary"
+      enabled: false
+    
+    # UMAP visualization to check for batch effects
+    - type: "umap"
+      enabled: true
+      description: "Visualize feature space, check for batch effects"
+    
+    # Marker analysis for UMAP clusters
+    - type: "markers"
+      enabled: true
+      description: "Find markers for UMAP clusters"
+    
+    # Correlation with DZ expression metadata
+    - type: "correlation"
+      enabled: true
+      description: "Correlate features with DZ expression levels"

@@ -83,7 +83,10 @@ def run_analysis(
     signaling_radius: float = 30.0,
     border_threshold: float = 0.4,
     generate_plots: bool = True,
-    n_permutations: int = 10000
+    n_permutations: int = 10000,
+    filter_gc_inside: bool = False,
+    feature_description_file: Optional[str] = None,
+    raw_image_dir: Optional[str] = None
 ):
     """Run analysis on extracted features
     
@@ -100,6 +103,9 @@ def run_analysis(
         border_threshold: Threshold for DZ/LZ border proximity classification
         generate_plots: Whether to generate visualization plots
         n_permutations: Number of permutations for statistical tests
+        filter_gc_inside: Filter to only cells inside germinal center
+        feature_description_file: Path to feature description CSV for name mapping
+        raw_image_dir: Directory with raw images for overlay visualizations
     """
     np.random.seed(random_seed)
     
@@ -126,8 +132,62 @@ def run_analysis(
     # Load protein levels if available
     aicda_path = os.path.join(features_dir, "aicda_levels.csv")
     cd3_path = os.path.join(features_dir, "cd3_levels.csv")
+    gc_path = os.path.join(features_dir, "gc_levels.csv")
+    
     aicda_levels = pd.read_csv(aicda_path, index_col=0) if os.path.exists(aicda_path) else None
     cd3_levels = pd.read_csv(cd3_path, index_col=0) if os.path.exists(cd3_path) else None
+    gc_levels = pd.read_csv(gc_path, index_col=0) if os.path.exists(gc_path) else None
+    
+    # Filter to cells inside germinal center if requested
+    if filter_gc_inside and gc_levels is not None:
+        logger.info("Filtering to cells inside germinal center...")
+        # Cells with gc_levels int_mean > 0 are inside the germinal center
+        gc_positive_cells = gc_levels[gc_levels['int_mean'] > 0]['nuc_id'].tolist()
+        
+        original_count = len(nuc_features)
+        nuc_features = nuc_features[nuc_features['nuc_id'].isin(gc_positive_cells)]
+        
+        # Also filter spatial coords and protein levels
+        if spatial_coords is not None:
+            spatial_coords = spatial_coords[spatial_coords['nuc_id'].isin(gc_positive_cells)]
+        if aicda_levels is not None:
+            aicda_levels = aicda_levels[aicda_levels['nuc_id'].isin(gc_positive_cells)]
+        if cd3_levels is not None:
+            cd3_levels = cd3_levels[cd3_levels['nuc_id'].isin(gc_positive_cells)]
+        
+        logger.info(f"  Filtered from {original_count} to {len(nuc_features)} cells inside GC")
+    elif filter_gc_inside and gc_levels is None:
+        logger.warning("GC filtering requested but gc_levels.csv not found. Proceeding with all cells.")
+    
+    # Load feature name mapping if provided
+    feature_name_dict = {}
+    feature_color_dict = {}
+    if feature_description_file and os.path.exists(feature_description_file):
+        logger.info(f"Loading feature descriptions from {feature_description_file}")
+        try:
+            desc_df = pd.read_csv(feature_description_file, index_col=0)
+            if 'feature' in desc_df.columns and 'long_name' in desc_df.columns:
+                feature_name_dict = dict(zip(desc_df['feature'], desc_df['long_name']))
+                nuc_features = nuc_features.rename(columns=feature_name_dict)
+                logger.info(f"  Renamed {len(feature_name_dict)} features to readable names")
+            
+            # Build feature color dict for category coloring in plots
+            if 'category' in desc_df.columns:
+                category_colors = {
+                    "morphology": "tab:blue",
+                    "intensity": "tab:green",
+                    "boundary": "tab:red",
+                    "texture": "tab:cyan",
+                    "chromatin condensation": "tab:purple",
+                    "moments": "tab:orange"
+                }
+                feature_color_dict = {
+                    row['long_name']: category_colors.get(row['category'], 'tab:gray')
+                    for _, row in desc_df.iterrows()
+                    if pd.notna(row.get('category'))
+                }
+        except Exception as e:
+            logger.warning(f"Could not load feature descriptions: {e}")
     
     # Clean and preprocess data
     meta_columns = [
@@ -152,7 +212,7 @@ def run_analysis(
     if 'cell_type_detection' in analysis_types or 'detect_cells' in analysis_types:
         logger.info("Running cell type detection...")
         nuc_features, results['cell_type_detection'] = run_cell_type_detection(
-            nuc_features, aicda_levels, cd3_levels, output_dir, generate_plots
+            nuc_features, aicda_levels, cd3_levels, gc_levels, output_dir, generate_plots
         )
     
     if 'cell_type' in analysis_types or 'classification' in analysis_types:
@@ -172,7 +232,7 @@ def run_analysis(
         logger.info("Running DZ/LZ boundary analysis...")
         results['boundary'] = run_boundary_analysis(
             nuc_features, filtered_features, spatial_coords, output_dir, 
-            random_seed, border_threshold, generate_plots
+            random_seed, border_threshold, generate_plots, raw_image_dir
         )
     
     if 'correlation' in analysis_types:
@@ -197,6 +257,53 @@ def run_analysis(
             nuc_features, filtered_features, output_dir
         )
     
+    # New analysis types from notebook
+    if 'tcell_interaction_dz' in analysis_types:
+        logger.info("Running T-cell interaction analysis for DZ B-cells...")
+        results['tcell_interaction_dz'] = run_tcell_interaction_subset(
+            nuc_features, filtered_features, spatial_coords, output_dir, random_seed,
+            cell_type_filter='DZ B-cells', pixel_size=pixel_size,
+            contact_radius=contact_radius, signaling_radius=signaling_radius,
+            generate_plots=generate_plots, feature_color_dict=feature_color_dict
+        )
+    
+    if 'tcell_interaction_lz' in analysis_types:
+        logger.info("Running T-cell interaction analysis for LZ B-cells...")
+        results['tcell_interaction_lz'] = run_tcell_interaction_subset(
+            nuc_features, filtered_features, spatial_coords, output_dir, random_seed,
+            cell_type_filter='LZ B-cells', pixel_size=pixel_size,
+            contact_radius=contact_radius, signaling_radius=signaling_radius,
+            generate_plots=generate_plots, feature_color_dict=feature_color_dict
+        )
+    
+    if 'dz_prediction_probability' in analysis_types:
+        logger.info("Running DZ prediction probability analysis...")
+        results['dz_prediction_probability'] = run_dz_prediction_probability_analysis(
+            nuc_features, filtered_features, output_dir, random_seed, generate_plots
+        )
+    
+    if 'tcell_fraction_comparison' in analysis_types:
+        logger.info("Running T-cell fraction comparison analysis...")
+        results['tcell_fraction_comparison'] = run_tcell_fraction_comparison(
+            nuc_features, output_dir, generate_plots
+        )
+    
+    if 'boundary_dz' in analysis_types:
+        logger.info("Running boundary analysis for DZ B-cells...")
+        results['boundary_dz'] = run_boundary_subset_analysis(
+            nuc_features, filtered_features, spatial_coords, output_dir,
+            random_seed, border_threshold, cell_type_filter='DZ B-cells',
+            generate_plots=generate_plots, feature_color_dict=feature_color_dict
+        )
+    
+    if 'boundary_lz' in analysis_types:
+        logger.info("Running boundary analysis for LZ B-cells...")
+        results['boundary_lz'] = run_boundary_subset_analysis(
+            nuc_features, filtered_features, spatial_coords, output_dir,
+            random_seed, border_threshold, cell_type_filter='LZ B-cells',
+            generate_plots=generate_plots, feature_color_dict=feature_color_dict
+        )
+    
     # Save updated features with annotations
     nuc_features.to_csv(os.path.join(output_dir, "nuc_features_annotated.csv"))
     
@@ -215,7 +322,7 @@ def run_analysis(
     return results
 
 
-def run_cell_type_detection(nuc_features, aicda_levels, cd3_levels, output_dir, generate_plots=True):
+def run_cell_type_detection(nuc_features, aicda_levels, cd3_levels, gc_levels, output_dir, generate_plots=True):
     """Run GMM-based cell type detection"""
     from src.analysis.cell_type_detection import assign_cell_types
     
@@ -228,6 +335,16 @@ def run_cell_type_detection(nuc_features, aicda_levels, cd3_levels, output_dir, 
     
     # Detect cell types
     nuc_features = assign_cell_types(nuc_features, aicda_levels, cd3_levels)
+    
+    # Add GC status if available
+    if gc_levels is not None:
+        gc_positive_cells = gc_levels[gc_levels['int_mean'] > 0]['nuc_id'].tolist()
+        nuc_features['gc_status'] = 'outside GC'
+        nuc_features.loc[nuc_features['nuc_id'].isin(gc_positive_cells), 'gc_status'] = 'inside GC'
+        
+        # Save GC status counts
+        gc_counts = nuc_features.groupby(['cell_type', 'gc_status']).size().unstack(fill_value=0)
+        gc_counts.to_csv(os.path.join(results_dir, "cell_type_by_gc_status.csv"))
     
     # Save results
     cell_type_counts = nuc_features['cell_type'].value_counts()
@@ -249,6 +366,17 @@ def run_cell_type_detection(nuc_features, aicda_levels, cd3_levels, output_dir, 
                 output_path=os.path.join(results_dir, "cell_type_distribution.png"),
                 title="Cell Type Distribution"
             )
+            
+            # Cell type distribution by GC status if available
+            if 'gc_status' in nuc_features.columns:
+                plot_cell_type_distribution(
+                    nuc_features,
+                    cell_type_col='cell_type',
+                    hue_col='gc_status',
+                    output_path=os.path.join(results_dir, "cell_type_by_gc_status.png"),
+                    title="Cell Type Distribution by GC Status"
+                )
+            
             logger.info(f"Saved cell type distribution plot")
         except Exception as e:
             logger.warning(f"Could not generate cell type plot: {e}")
@@ -470,7 +598,8 @@ def run_tcell_interaction_analysis(
         try:
             from src.analysis.visualization import (
                 plot_spatial_scatter, plot_tcell_influence_distribution,
-                plot_tcell_interaction_zones, plot_feature_importance
+                plot_tcell_interaction_zones, plot_feature_importance,
+                plot_tcell_distance_spatial
             )
             
             # T-cell influence distribution by cell type
@@ -492,19 +621,40 @@ def run_tcell_interaction_analysis(
                     n_features=15
                 )
             
-            # Spatial distribution plots for first 3 images
-            for img in nuc_features['image'].unique()[:3]:
-                img_data = nuc_features[nuc_features['image'] == img].merge(
-                    spatial_coords, on='nuc_id', how='left'
+            # Spatial distribution plots for ALL images (like notebook)
+            for img in nuc_features['image'].unique():
+                # Merge nuc_features with tcell_distances for this image
+                img_nuc_data = nuc_features[nuc_features['image'] == img]
+                img_tcell_dist = tcell_distances[tcell_distances['image'] == img]
+                
+                img_data = img_nuc_data.merge(
+                    img_tcell_dist[['nuc_id', 'tcell_mean_distance', 'tcell_median_distance', 'tcell_min_distance']],
+                    on='nuc_id', how='left'
                 )
                 
+                # Merge spatial coords if needed
+                if 'spat_centroid_x' not in img_data.columns:
+                    img_data = img_data.merge(spatial_coords, on='nuc_id', how='left')
+                
                 # Determine centroid column names
-                if 'centroid-1' in img_data.columns:
+                if 'spat_centroid_x' in img_data.columns:
+                    x_col, y_col = 'spat_centroid_x', 'spat_centroid_y'
+                elif 'centroid-1' in img_data.columns:
                     x_col, y_col = 'centroid-1', 'centroid-0'
                 elif 'centroid_1' in img_data.columns:
                     x_col, y_col = 'centroid_1', 'centroid_0'
                 else:
                     continue
+                
+                # 3-panel T-cell distance spatial plot (like notebook)
+                plot_tcell_distance_spatial(
+                    img_data,
+                    x_col=x_col,
+                    y_col=y_col,
+                    cell_type_col='cell_type',
+                    output_path=os.path.join(results_dir, f"tcell_distance_spatial_img{img}.png"),
+                    title=f"T-cell Distance Analysis - Image {img}"
+                )
                 
                 # Simple spatial scatter by T-cell influence
                 plot_spatial_scatter(
@@ -543,12 +693,100 @@ def run_tcell_interaction_analysis(
         except Exception as e:
             logger.warning(f"Could not generate spatial plots: {e}")
     
+    # Add correlation analysis between chromatin features and T-cell distance
+    if 'tcell_mean_distance' in nuc_features.columns:
+        try:
+            from src.analysis.statistical_tests import permutation_test_correlation
+            from src.analysis.visualization import plot_correlation_lm
+            
+            # Filter to B-cells
+            bcells = nuc_features[nuc_features['cell_type'].isin(['DZ B-cells', 'LZ B-cells'])].copy()
+            
+            # Test correlation for key features
+            key_features = ['min_intensity', 'mean_intensity', 'area']
+            correlation_results = []
+            
+            for feature in key_features:
+                if feature not in bcells.columns:
+                    continue
+                    
+                # All B-cells
+                all_bcells_data = bcells[[feature, 'tcell_mean_distance']].dropna()
+                if len(all_bcells_data) > 50:
+                    r, p = permutation_test_correlation(
+                        all_bcells_data[feature].values,
+                        all_bcells_data['tcell_mean_distance'].values,
+                        n_permutations=10000
+                    )
+                    correlation_results.append({
+                        'feature': feature,
+                        'cell_type': 'all B-cells',
+                        'pearson_r': r,
+                        'p_value': p
+                    })
+                    logger.info(f"  {feature} vs tcell_mean_distance (all B-cells): r={r:.3f}, p={p:.2e}")
+                
+                # DZ B-cells
+                dz_data = bcells[bcells['cell_type'] == 'DZ B-cells'][[feature, 'tcell_mean_distance']].dropna()
+                if len(dz_data) > 50:
+                    r, p = permutation_test_correlation(
+                        dz_data[feature].values,
+                        dz_data['tcell_mean_distance'].values,
+                        n_permutations=10000
+                    )
+                    correlation_results.append({
+                        'feature': feature,
+                        'cell_type': 'DZ B-cells',
+                        'pearson_r': r,
+                        'p_value': p
+                    })
+                
+                # LZ B-cells
+                lz_data = bcells[bcells['cell_type'] == 'LZ B-cells'][[feature, 'tcell_mean_distance']].dropna()
+                if len(lz_data) > 50:
+                    r, p = permutation_test_correlation(
+                        lz_data[feature].values,
+                        lz_data['tcell_mean_distance'].values,
+                        n_permutations=10000
+                    )
+                    correlation_results.append({
+                        'feature': feature,
+                        'cell_type': 'LZ B-cells',
+                        'pearson_r': r,
+                        'p_value': p
+                    })
+            
+            # Save correlation results
+            if correlation_results:
+                pd.DataFrame(correlation_results).to_csv(
+                    os.path.join(results_dir, "tcell_distance_correlations.csv"), index=False
+                )
+            
+            # Generate lmplot for min_intensity vs tcell_mean_distance (like notebook)
+            if generate_plots and 'min_intensity' in bcells.columns:
+                plot_data = bcells[['cell_type', 'min_intensity', 'tcell_mean_distance']].copy()
+                plot_data_all = bcells[['min_intensity', 'tcell_mean_distance']].copy()
+                plot_data_all['cell_type'] = 'all B-cells'
+                plot_data_combined = pd.concat([plot_data, plot_data_all], ignore_index=True)
+                
+                plot_correlation_lm(
+                    plot_data_combined,
+                    x_col='tcell_mean_distance',
+                    y_col='min_intensity',
+                    hue_col='cell_type',
+                    output_path=os.path.join(results_dir, "min_intensity_vs_tcell_distance.png"),
+                    title="Min Intensity vs T-cell Mean Distance"
+                )
+                
+        except Exception as corr_e:
+            logger.warning(f"Could not compute correlations: {corr_e}")
+    
     return nuc_features, {'influence_counts': influence_counts.to_dict()}
 
 
 def run_boundary_analysis(
     nuc_features, filtered_features, spatial_coords, output_dir, 
-    random_seed, border_threshold=0.4, generate_plots=True
+    random_seed, border_threshold=0.4, generate_plots=True, raw_image_dir=None
 ):
     """Run DZ/LZ boundary analysis"""
     from src.analysis.boundary_analysis import (
@@ -619,18 +857,42 @@ def run_boundary_analysis(
     # Generate plots
     if generate_plots:
         try:
-            from src.analysis.visualization import plot_spatial_scatter
+            from src.analysis.visualization import (
+                plot_spatial_scatter, plot_boundary_analysis_per_image
+            )
             
-            for img in border_distances['image'].unique()[:3]:
+            # Generate comprehensive per-image plots (like notebook)
+            for img in border_distances['image'].unique():
                 img_data = border_distances[border_distances['image'] == img]
-                plot_spatial_scatter(
-                    img_data,
-                    x_col='centroid-1',
-                    y_col='centroid-0',
-                    color_col='border_proximity',
-                    output_path=os.path.join(results_dir, f"spatial_border_proximity_img{img}.png"),
-                    title=f"Border Proximity - Image {img}"
-                )
+                
+                # Determine centroid columns
+                if 'centroid-1' in img_data.columns:
+                    x_col, y_col = 'centroid-1', 'centroid-0'
+                elif 'centroid_1' in img_data.columns:
+                    x_col, y_col = 'centroid_1', 'centroid_0'
+                else:
+                    continue
+                
+                # Try to create 3-panel plot like notebook
+                try:
+                    plot_boundary_analysis_per_image(
+                        img_data,
+                        x_col=x_col,
+                        y_col=y_col,
+                        output_path=os.path.join(results_dir, f"boundary_analysis_img{img}.png"),
+                        title=f"Boundary Analysis - Image {img}"
+                    )
+                except Exception as e:
+                    # Fall back to simple scatter
+                    plot_spatial_scatter(
+                        img_data,
+                        x_col=x_col,
+                        y_col=y_col,
+                        color_col='border_proximity',
+                        output_path=os.path.join(results_dir, f"spatial_border_proximity_img{img}.png"),
+                        title=f"Border Proximity - Image {img}"
+                    )
+                    
         except Exception as e:
             logger.warning(f"Could not generate spatial plots: {e}")
     
@@ -794,3 +1056,482 @@ def run_marker_analysis(nuc_features, filtered_features, output_dir):
         results['by_tcell_influence'] = len(markers[markers['adjusted_pval'] < 0.05])
     
     return results
+
+
+def run_tcell_interaction_subset(
+    nuc_features, filtered_features, spatial_coords, output_dir, random_seed,
+    cell_type_filter: str = 'DZ B-cells', pixel_size=0.3225,
+    contact_radius=15.0, signaling_radius=30.0, generate_plots=True, feature_color_dict=None
+):
+    """Run T-cell interaction analysis for a specific B-cell subset (DZ or LZ)"""
+    from src.analysis.statistical_tests import run_cv_classification, find_markers
+    
+    safe_name = cell_type_filter.replace(' ', '_').replace('-', '_').lower()
+    results_dir = os.path.join(output_dir, f"tcell_interaction_{safe_name}")
+    Path(results_dir).mkdir(parents=True, exist_ok=True)
+    
+    if 'cell_type' not in nuc_features.columns or 'tcell_influence' not in nuc_features.columns:
+        logger.warning(f"Required columns not available for {cell_type_filter} T-cell interaction analysis.")
+        return None
+    
+    # Filter to specified B-cell type with T-cell interaction labels
+    bcell_mask = nuc_features['cell_type'] == cell_type_filter
+    interaction_mask = nuc_features['tcell_influence'].isin(['T-cell interactors', 'Non-T-cell interactors'])
+    analysis_mask = bcell_mask & interaction_mask
+    
+    analysis_features = nuc_features[analysis_mask]
+    analysis_nuc_ids = analysis_features['nuc_id'].values
+    common_idx = [idx for idx in analysis_nuc_ids if idx in filtered_features.index]
+    
+    if len(common_idx) < 100:
+        logger.warning(f"Too few {cell_type_filter} for T-cell interaction analysis ({len(common_idx)} samples).")
+        return None
+    
+    X = filtered_features.loc[common_idx]
+    analysis_features_indexed = analysis_features.set_index('nuc_id')
+    y = analysis_features_indexed.loc[common_idx, 'tcell_influence']
+    
+    logger.info(f"Running {cell_type_filter} T-cell interaction classification on {len(X)} samples...")
+    cv_results = run_cv_classification(X, y, n_folds=10, random_state=random_seed, balance=True)
+    
+    # Save results
+    cv_summary = pd.DataFrame([{
+        'cell_type': cell_type_filter,
+        'balanced_accuracy_mean': cv_results['cv_mean'],
+        'balanced_accuracy_std': cv_results['cv_std'],
+        'n_samples': len(X)
+    }])
+    cv_summary.to_csv(os.path.join(results_dir, "classification_results.csv"), index=False)
+    
+    cv_results['feature_importance'].to_csv(
+        os.path.join(results_dir, "feature_importance.csv"), index=False
+    )
+    
+    # Find markers
+    markers = find_markers(X, y, test='welch')
+    markers.to_csv(os.path.join(results_dir, "marker_features.csv"), index=False)
+    
+    # Generate plots
+    if generate_plots:
+        try:
+            from src.analysis.visualization import (
+                plot_confusion_matrix, plot_feature_importance_colored,
+                plot_roc_binary, plot_violin_with_stats
+            )
+            
+            # Confusion matrix
+            plot_confusion_matrix(
+                cv_results['true_labels'],
+                cv_results['predictions'],
+                list(cv_results['classes']),
+                os.path.join(results_dir, "confusion_matrix.png")
+            )
+            
+            # Feature importance with category coloring
+            plot_feature_importance_colored(
+                cv_results['feature_importance']['importance'].values,
+                cv_results['feature_importance']['feature'].tolist(),
+                os.path.join(results_dir, "feature_importance.png"),
+                feature_color_dict=feature_color_dict,
+                title=f"{cell_type_filter} T-cell Interaction Feature Importance",
+                n_features=15
+            )
+            
+            # ROC curve
+            if 'probabilities' in cv_results and cv_results['probabilities'] is not None:
+                probs = cv_results['probabilities']
+                if probs.ndim == 2:
+                    pos_idx = list(cv_results['classes']).index('T-cell interactors') if 'T-cell interactors' in cv_results['classes'] else 0
+                    probs = probs[:, pos_idx]
+                
+                plot_roc_binary(
+                    cv_results['true_labels'],
+                    probs,
+                    pos_label='T-cell interactors',
+                    output_path=os.path.join(results_dir, "roc_curve.png"),
+                    title=f"ROC Curve - {cell_type_filter} T-cell Interaction"
+                )
+            
+            # Violin plots for top markers with stats
+            sig_markers = markers[markers['adjusted_pval'] < 0.05]
+            if len(sig_markers) > 0:
+                plot_data = X.copy()
+                plot_data['tcell_influence'] = y.values
+                
+                plot_violin_with_stats(
+                    plot_data,
+                    sig_markers['feature'].head(6).tolist(),
+                    group_col='tcell_influence',
+                    output_path=os.path.join(results_dir, "marker_violin_plots.png"),
+                    title=f"{cell_type_filter} - Top Differential Features"
+                )
+                
+        except Exception as e:
+            logger.warning(f"Could not generate plots for {cell_type_filter}: {e}")
+    
+    logger.info(f"  {cell_type_filter} T-cell interaction: Balanced accuracy {cv_results['cv_mean']:.3f} (+/- {cv_results['cv_std']:.3f})")
+    
+    return {
+        'balanced_accuracy': cv_results['cv_mean'],
+        'balanced_accuracy_std': cv_results['cv_std'],
+        'n_samples': len(X)
+    }
+
+
+def run_dz_prediction_probability_analysis(
+    nuc_features, filtered_features, output_dir, random_seed, generate_plots=True
+):
+    """
+    Train classifier on non-T-cell interactors only, then use DZ prediction probability
+    as proxy for DZ-like phenotype to analyze relationship with T-cell interaction.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+    from imblearn.under_sampling import RandomUnderSampler
+    from sklearn import metrics
+    
+    results_dir = os.path.join(output_dir, "dz_prediction_probability")
+    Path(results_dir).mkdir(parents=True, exist_ok=True)
+    
+    if 'cell_type' not in nuc_features.columns or 'tcell_influence' not in nuc_features.columns:
+        logger.warning("Required columns not available for DZ prediction probability analysis.")
+        return None
+    
+    # Get B-cells only
+    bcell_mask = nuc_features['cell_type'].isin(['DZ B-cells', 'LZ B-cells'])
+    bcell_features = nuc_features[bcell_mask]
+    
+    # Separate T-cell interactors and non-interactors
+    non_interactors_mask = bcell_features['tcell_influence'] == 'Non-T-cell interactors'
+    interactors_mask = bcell_features['tcell_influence'] == 'T-cell interactors'
+    
+    non_interactors = bcell_features[non_interactors_mask]
+    interactors = bcell_features[interactors_mask]
+    
+    if len(non_interactors) < 100 or len(interactors) < 50:
+        logger.warning("Too few samples for DZ prediction probability analysis.")
+        return None
+    
+    # Balance training set by cell type (DZ vs LZ)
+    non_interactors_dz = non_interactors[non_interactors['cell_type'] == 'DZ B-cells']
+    non_interactors_lz = non_interactors[non_interactors['cell_type'] == 'LZ B-cells']
+    
+    n_train = int(0.8 * min(len(non_interactors_dz), len(non_interactors_lz)))
+    
+    np.random.seed(random_seed)
+    train_idx = list(np.random.choice(non_interactors_dz.index, size=n_train, replace=False))
+    train_idx += list(np.random.choice(non_interactors_lz.index, size=n_train, replace=False))
+    
+    # Test set: remaining non-interactors + all interactors
+    test_idx = [idx for idx in non_interactors.index if idx not in train_idx]
+    test_idx += list(interactors.index)
+    
+    # Get features
+    nuc_features_by_nucid = nuc_features.set_index('nuc_id')
+    train_nuc_ids = nuc_features.loc[train_idx, 'nuc_id'].values
+    test_nuc_ids = nuc_features.loc[test_idx, 'nuc_id'].values
+    
+    train_common = [idx for idx in train_nuc_ids if idx in filtered_features.index]
+    test_common = [idx for idx in test_nuc_ids if idx in filtered_features.index]
+    
+    if len(train_common) < 50 or len(test_common) < 50:
+        logger.warning("Too few samples after feature matching for DZ prediction probability analysis.")
+        return None
+    
+    X_train = filtered_features.loc[train_common]
+    X_test = filtered_features.loc[test_common]
+    
+    y_train = nuc_features_by_nucid.loc[train_common, 'cell_type']
+    y_test = nuc_features_by_nucid.loc[test_common, 'cell_type']
+    tcell_influence_test = nuc_features_by_nucid.loc[test_common, 'tcell_influence']
+    
+    # Train classifier
+    logger.info(f"Training DZ/LZ classifier on {len(X_train)} non-T-cell interacting B-cells...")
+    rfc = RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=random_seed)
+    rfc.fit(X_train, y_train)
+    
+    # Get predictions and probabilities for test set
+    predictions = rfc.predict(X_test)
+    probabilities = rfc.predict_proba(X_test)
+    
+    # Get DZ probability (probability of being DZ B-cells)
+    dz_class_idx = list(rfc.classes_).index('DZ B-cells') if 'DZ B-cells' in rfc.classes_ else 0
+    dz_probs = probabilities[:, dz_class_idx]
+    
+    # Create results dataframe
+    results_df = pd.DataFrame({
+        'nuc_id': test_common,
+        'true_cell_type': y_test.values,
+        'predicted_cell_type': predictions,
+        'dz_probability': dz_probs,
+        'tcell_influence': tcell_influence_test.values
+    })
+    results_df.to_csv(os.path.join(results_dir, "prediction_results.csv"), index=False)
+    
+    # Compute mean DZ probability by cell type and T-cell influence
+    grouped_means = results_df.groupby(['true_cell_type', 'tcell_influence'])['dz_probability'].agg(['mean', 'std', 'count'])
+    grouped_means.to_csv(os.path.join(results_dir, "dz_probability_by_group.csv"))
+    
+    # Generate plots
+    if generate_plots:
+        try:
+            from src.analysis.visualization import plot_dz_probability_violin, plot_confusion_matrix
+            
+            # Confusion matrix on test set
+            conf_mtx = metrics.confusion_matrix(y_test, predictions, labels=list(rfc.classes_))
+            conf_mtx_norm = conf_mtx.astype(float) / conf_mtx.sum(axis=1, keepdims=True)
+            
+            plot_confusion_matrix(
+                y_test.values,
+                predictions,
+                list(rfc.classes_),
+                os.path.join(results_dir, "confusion_matrix.png")
+            )
+            
+            # DZ probability violin plot by cell type and T-cell influence
+            plot_dz_probability_violin(
+                results_df,
+                output_path=os.path.join(results_dir, "dz_probability_violin.png"),
+                title="DZ B-cell Prediction Probability by T-cell Interaction"
+            )
+            
+        except Exception as e:
+            logger.warning(f"Could not generate plots for DZ prediction probability: {e}")
+    
+    logger.info(f"  DZ prediction probability analysis complete")
+    
+    return {
+        'train_samples': len(X_train),
+        'test_samples': len(X_test),
+        'test_accuracy': (predictions == y_test.values).mean()
+    }
+
+
+def run_tcell_fraction_comparison(nuc_features, output_dir, generate_plots=True):
+    """
+    Compare the fraction of T-cell interacting B-cells between DZ and LZ.
+    Reproduces the bar plots from the notebook with statistical annotations.
+    """
+    from scipy import stats
+    
+    results_dir = os.path.join(output_dir, "tcell_fraction_comparison")
+    Path(results_dir).mkdir(parents=True, exist_ok=True)
+    
+    if 'cell_type' not in nuc_features.columns or 'tcell_influence' not in nuc_features.columns:
+        logger.warning("Required columns not available for T-cell fraction comparison.")
+        return None
+    
+    # Get B-cells only
+    bcell_mask = nuc_features['cell_type'].isin(['DZ B-cells', 'LZ B-cells'])
+    bcells = nuc_features[bcell_mask]
+    
+    # Compute per-image statistics
+    image_stats = []
+    for image in bcells['image'].unique():
+        img_bcells = bcells[bcells['image'] == image]
+        
+        dz_bcells = img_bcells[img_bcells['cell_type'] == 'DZ B-cells']
+        lz_bcells = img_bcells[img_bcells['cell_type'] == 'LZ B-cells']
+        
+        tcell_interactors = img_bcells[img_bcells['tcell_influence'] == 'T-cell interactors']
+        
+        n_total = len(img_bcells)
+        n_tcell_interactors = len(tcell_interactors)
+        
+        if n_tcell_interactors > 0:
+            dz_tcell_interactors = len(dz_bcells[dz_bcells['tcell_influence'] == 'T-cell interactors'])
+            lz_tcell_interactors = len(lz_bcells[lz_bcells['tcell_influence'] == 'T-cell interactors'])
+            
+            freq_dz_tcell_interactors = dz_tcell_interactors / n_tcell_interactors
+            freq_lz_tcell_interactors = lz_tcell_interactors / n_tcell_interactors
+        else:
+            freq_dz_tcell_interactors = 0
+            freq_lz_tcell_interactors = 0
+        
+        # Fraction of T-cell interactors within each zone
+        n_dz = len(dz_bcells)
+        n_lz = len(lz_bcells)
+        
+        freq_tcell_interactors_in_dz = len(dz_bcells[dz_bcells['tcell_influence'] == 'T-cell interactors']) / n_dz if n_dz > 0 else 0
+        freq_tcell_interactors_in_lz = len(lz_bcells[lz_bcells['tcell_influence'] == 'T-cell interactors']) / n_lz if n_lz > 0 else 0
+        
+        image_stats.append({
+            'image': image,
+            'n_bcells': n_total,
+            'n_dz_bcells': n_dz,
+            'n_lz_bcells': n_lz,
+            'n_tcell_interactors': n_tcell_interactors,
+            'freq_dz_of_tcell_interactors': freq_dz_tcell_interactors,
+            'freq_lz_of_tcell_interactors': freq_lz_tcell_interactors,
+            'freq_tcell_interactors_in_dz': freq_tcell_interactors_in_dz,
+            'freq_tcell_interactors_in_lz': freq_tcell_interactors_in_lz
+        })
+    
+    stats_df = pd.DataFrame(image_stats)
+    stats_df.to_csv(os.path.join(results_dir, "per_image_statistics.csv"), index=False)
+    
+    # Statistical tests
+    dz_fractions = stats_df['freq_tcell_interactors_in_dz'].values
+    lz_fractions = stats_df['freq_tcell_interactors_in_lz'].values
+    
+    ttest_result = stats.ttest_ind(dz_fractions, lz_fractions, equal_var=False)
+    
+    test_results = pd.DataFrame([{
+        'comparison': 'DZ vs LZ fraction of T-cell interactors',
+        't_statistic': ttest_result.statistic,
+        'p_value': ttest_result.pvalue
+    }])
+    test_results.to_csv(os.path.join(results_dir, "statistical_tests.csv"), index=False)
+    
+    # Generate plots
+    if generate_plots:
+        try:
+            from src.analysis.visualization import plot_tcell_fraction_comparison
+            
+            plot_tcell_fraction_comparison(
+                stats_df,
+                output_path=os.path.join(results_dir, "tcell_fraction_comparison.png"),
+                title="Fraction of T-cell Interacting B-cells"
+            )
+            
+        except Exception as e:
+            logger.warning(f"Could not generate plots for T-cell fraction comparison: {e}")
+    
+    logger.info(f"  T-cell fraction comparison: DZ={np.mean(dz_fractions):.3f}, LZ={np.mean(lz_fractions):.3f}, p={ttest_result.pvalue:.2e}")
+    
+    return {
+        'mean_dz_fraction': np.mean(dz_fractions),
+        'mean_lz_fraction': np.mean(lz_fractions),
+        'p_value': ttest_result.pvalue
+    }
+
+
+def run_boundary_subset_analysis(
+    nuc_features, filtered_features, spatial_coords, output_dir,
+    random_seed, border_threshold, cell_type_filter, generate_plots=True, feature_color_dict=None
+):
+    """Run boundary analysis for a specific B-cell subset (DZ or LZ)"""
+    from src.analysis.boundary_analysis import get_distances_to_dz_lz_border, assign_border_proximity
+    from src.analysis.statistical_tests import run_cv_classification, find_markers
+    
+    safe_name = cell_type_filter.replace(' ', '_').replace('-', '_').lower()
+    results_dir = os.path.join(output_dir, f"boundary_{safe_name}")
+    Path(results_dir).mkdir(parents=True, exist_ok=True)
+    
+    if spatial_coords is None or 'cell_type' not in nuc_features.columns:
+        logger.warning(f"Required data not available for {cell_type_filter} boundary analysis.")
+        return None
+    
+    # Compute distances to DZ/LZ border
+    border_distances = get_distances_to_dz_lz_border(nuc_features, spatial_coords)
+    
+    if len(border_distances) == 0:
+        logger.warning(f"Could not compute border distances for {cell_type_filter}.")
+        return None
+    
+    # Assign proximity status
+    border_distances = assign_border_proximity(border_distances, threshold=border_threshold)
+    
+    # Filter to specified cell type
+    cell_type_data = border_distances[border_distances['cell_type'] == cell_type_filter]
+    
+    if len(cell_type_data) < 100:
+        logger.warning(f"Too few {cell_type_filter} for boundary analysis ({len(cell_type_data)} samples).")
+        return None
+    
+    # Get features
+    common_idx = cell_type_data['nuc_id'].values
+    common_idx = [idx for idx in common_idx if idx in filtered_features.index]
+    
+    if len(common_idx) < 50:
+        logger.warning(f"Too few matched samples for {cell_type_filter} boundary analysis.")
+        return None
+    
+    X = filtered_features.loc[common_idx]
+    y = cell_type_data.set_index('nuc_id').loc[common_idx, 'border_proximity']
+    
+    # Run classification
+    logger.info(f"Running {cell_type_filter} boundary classification on {len(X)} samples...")
+    cv_results = run_cv_classification(X, y, n_folds=10, random_state=random_seed, balance=True)
+    
+    # Save results
+    cv_summary = pd.DataFrame([{
+        'cell_type': cell_type_filter,
+        'balanced_accuracy_mean': cv_results['cv_mean'],
+        'balanced_accuracy_std': cv_results['cv_std'],
+        'n_samples': len(X)
+    }])
+    cv_summary.to_csv(os.path.join(results_dir, "classification_results.csv"), index=False)
+    
+    cv_results['feature_importance'].to_csv(
+        os.path.join(results_dir, "feature_importance.csv"), index=False
+    )
+    
+    # Find markers
+    markers = find_markers(X, y, test='welch')
+    markers.to_csv(os.path.join(results_dir, "marker_features.csv"), index=False)
+    
+    # Generate plots
+    if generate_plots:
+        try:
+            from src.analysis.visualization import (
+                plot_confusion_matrix, plot_feature_importance_colored,
+                plot_roc_binary, plot_violin_with_stats
+            )
+            
+            # Confusion matrix
+            plot_confusion_matrix(
+                cv_results['true_labels'],
+                cv_results['predictions'],
+                list(cv_results['classes']),
+                os.path.join(results_dir, "confusion_matrix.png")
+            )
+            
+            # Feature importance with category coloring
+            plot_feature_importance_colored(
+                cv_results['feature_importance']['importance'].values,
+                cv_results['feature_importance']['feature'].tolist(),
+                os.path.join(results_dir, "feature_importance.png"),
+                feature_color_dict=feature_color_dict,
+                title=f"{cell_type_filter} Boundary Classification Feature Importance",
+                n_features=15
+            )
+            
+            # ROC curve
+            if 'probabilities' in cv_results and cv_results['probabilities'] is not None:
+                probs = cv_results['probabilities']
+                if probs.ndim == 2:
+                    pos_idx = list(cv_results['classes']).index('close') if 'close' in cv_results['classes'] else 0
+                    probs = probs[:, pos_idx]
+                
+                plot_roc_binary(
+                    cv_results['true_labels'],
+                    probs,
+                    pos_label='close',
+                    output_path=os.path.join(results_dir, "roc_curve.png"),
+                    title=f"ROC Curve - {cell_type_filter} Boundary Proximity"
+                )
+            
+            # Violin plots for top markers
+            sig_markers = markers[markers['adjusted_pval'] < 0.05]
+            if len(sig_markers) > 0:
+                plot_data = X.copy()
+                plot_data['border_proximity'] = y.values
+                
+                plot_violin_with_stats(
+                    plot_data,
+                    sig_markers['feature'].head(6).tolist(),
+                    group_col='border_proximity',
+                    output_path=os.path.join(results_dir, "marker_violin_plots.png"),
+                    title=f"{cell_type_filter} - Top Differential Features by Border Proximity"
+                )
+                
+        except Exception as e:
+            logger.warning(f"Could not generate plots for {cell_type_filter} boundary: {e}")
+    
+    logger.info(f"  {cell_type_filter} boundary classification: {cv_results['cv_mean']:.3f} (+/- {cv_results['cv_std']:.3f})")
+    
+    return {
+        'balanced_accuracy': cv_results['cv_mean'],
+        'balanced_accuracy_std': cv_results['cv_std'],
+        'n_samples': len(X)
+    }

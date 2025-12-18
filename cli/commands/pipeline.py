@@ -153,6 +153,12 @@ def run_full_pipeline(
             cell_seg_config = feat_config.get('cell_segmentation', {})
             feat_output_dir = feat_config.get('output_dir') or os.path.join(output_dir, 'features')
             
+            # Get GC mask directory if specified
+            gc_mask_dir = feat_config.get('gc_mask_dir')
+            if gc_mask_dir and not os.path.isabs(gc_mask_dir):
+                # Convert relative path to absolute
+                gc_mask_dir = os.path.normpath(gc_mask_dir)
+            
             extract_features(
                 raw_images_dir=raw_images_dir,
                 labels_dir=labels_dir,
@@ -161,6 +167,7 @@ def run_full_pipeline(
                 cell_segmentation=cell_seg_config.get('enabled', False),
                 dilation_radius=cell_seg_config.get('dilation_radius') or 10,
                 extract_spatial=feat_config.get('extract_spatial', True),
+                gc_mask_dir=gc_mask_dir,
                 state=state,
                 resume=resume
             )
@@ -210,7 +217,10 @@ def run_full_pipeline(
                 signaling_radius=spatial_config.get('signaling_radius', 30.0),
                 border_threshold=spatial_config.get('border_threshold', 0.4),
                 generate_plots=analysis_config.get('generate_plots', True),
-                n_permutations=analysis_config.get('n_permutations', 10000)
+                n_permutations=analysis_config.get('n_permutations', 10000),
+                filter_gc_inside=analysis_config.get('filter_gc_inside', False),
+                feature_description_file=analysis_config.get('feature_description_file'),
+                raw_image_dir=analysis_config.get('raw_image_dir')
             )
             state.complete_step('analyze')
         except Exception as e:

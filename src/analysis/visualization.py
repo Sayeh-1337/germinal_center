@@ -1347,3 +1347,675 @@ def plot_marker_comparison(
     
     plt.close()
 
+
+def plot_dz_probability_violin(
+    data: pd.DataFrame,
+    output_path: Optional[str] = None,
+    title: str = "DZ B-cell Prediction Probability by T-cell Interaction",
+    figsize: Tuple[int, int] = (10, 6)
+) -> None:
+    """Plot violin plot of DZ prediction probability by cell type and T-cell influence
+    
+    Args:
+        data: DataFrame with dz_probability, true_cell_type, and tcell_influence columns
+        output_path: Path to save figure
+        title: Plot title
+        figsize: Figure size
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')
+        import seaborn as sns
+        from scipy import stats
+    except ImportError:
+        logger.error("Required packages not installed")
+        raise
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Create combined category for x-axis
+    data = data.copy()
+    
+    influence_palette = {
+        'T-cell interactors': '#E74C3C',
+        'Non-T-cell interactors': '#3498DB'
+    }
+    
+    sns.violinplot(
+        data=data,
+        x='true_cell_type',
+        y='dz_probability',
+        hue='tcell_influence',
+        hue_order=['T-cell interactors', 'Non-T-cell interactors'],
+        palette=influence_palette,
+        ax=ax,
+        inner='box',
+        split=False
+    )
+    
+    ax.set_xlabel('Cell Type')
+    ax.set_ylabel('DZ B-cell Prediction Probability')
+    ax.set_title(title)
+    ax.legend(title='T-cell Interaction', loc='lower left')
+    
+    # Add statistical annotations
+    for i, cell_type in enumerate(['DZ B-cells', 'LZ B-cells']):
+        if cell_type not in data['true_cell_type'].values:
+            continue
+            
+        ct_data = data[data['true_cell_type'] == cell_type]
+        interactors = ct_data[ct_data['tcell_influence'] == 'T-cell interactors']['dz_probability']
+        non_interactors = ct_data[ct_data['tcell_influence'] == 'Non-T-cell interactors']['dz_probability']
+        
+        if len(interactors) > 0 and len(non_interactors) > 0:
+            stat, pval = stats.ttest_ind(interactors, non_interactors, equal_var=False)
+            
+            # Format p-value
+            if pval < 0.0001:
+                pval_text = '****'
+            elif pval < 0.001:
+                pval_text = '***'
+            elif pval < 0.01:
+                pval_text = '**'
+            elif pval < 0.05:
+                pval_text = '*'
+            else:
+                pval_text = 'ns'
+            
+            y_max = data['dz_probability'].max()
+            y_height = y_max + 0.05 + (i * 0.1)
+            
+            # Draw bracket
+            x_pos = i
+            ax.plot([x_pos - 0.2, x_pos - 0.2, x_pos + 0.2, x_pos + 0.2],
+                    [y_height, y_height + 0.02, y_height + 0.02, y_height],
+                    'k-', lw=1)
+            ax.text(x_pos, y_height + 0.03, pval_text, ha='center', fontsize=10)
+    
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        logger.info(f"Saved DZ probability violin plot to {output_path}")
+    
+    plt.close()
+
+
+def plot_tcell_fraction_comparison(
+    stats_df: pd.DataFrame,
+    output_path: Optional[str] = None,
+    title: str = "Fraction of T-cell Interacting B-cells",
+    figsize: Tuple[int, int] = (10, 5)
+) -> None:
+    """Plot bar comparison of T-cell fraction in DZ vs LZ with statistical annotation
+    
+    Args:
+        stats_df: DataFrame with per-image statistics including:
+            - freq_tcell_interactors_in_dz
+            - freq_tcell_interactors_in_lz
+        output_path: Path to save figure
+        title: Plot title
+        figsize: Figure size
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')
+        import seaborn as sns
+        from scipy import stats
+    except ImportError:
+        logger.error("Required packages not installed")
+        raise
+    
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    
+    # Plot 1: Fraction of T-cell interactors within each zone
+    dz_fractions = stats_df['freq_tcell_interactors_in_dz'].values
+    lz_fractions = stats_df['freq_tcell_interactors_in_lz'].values
+    
+    plot_data1 = pd.DataFrame({
+        'Fraction': np.concatenate([dz_fractions, lz_fractions]),
+        'Zone': ['DZ'] * len(dz_fractions) + ['LZ'] * len(lz_fractions)
+    })
+    
+    sns.barplot(data=plot_data1, x='Zone', y='Fraction', ax=axes[0], 
+                palette=['#E74C3C', '#3498DB'], capsize=0.1, errwidth=1.5, ci='sd')
+    
+    # Add statistical annotation
+    stat, pval = stats.ttest_ind(dz_fractions, lz_fractions, equal_var=False)
+    
+    if pval < 0.0001:
+        pval_text = '****'
+    elif pval < 0.001:
+        pval_text = '***'
+    elif pval < 0.01:
+        pval_text = '**'
+    elif pval < 0.05:
+        pval_text = '*'
+    else:
+        pval_text = 'ns'
+    
+    y_max = max(plot_data1['Fraction'].max(), 0.5)
+    axes[0].plot([0, 0, 1, 1], [y_max*1.05, y_max*1.1, y_max*1.1, y_max*1.05], 'k-', lw=1)
+    axes[0].text(0.5, y_max*1.12, pval_text, ha='center', fontsize=12)
+    
+    axes[0].set_xlabel('B-cell Zone')
+    axes[0].set_ylabel('Fraction of T-cell Interactors')
+    axes[0].set_title('T-cell Interactors per Zone')
+    
+    # Plot 2: Distribution of DZ vs LZ among T-cell interactors
+    if 'freq_dz_of_tcell_interactors' in stats_df.columns:
+        dz_of_interactors = stats_df['freq_dz_of_tcell_interactors'].values
+        lz_of_interactors = stats_df['freq_lz_of_tcell_interactors'].values
+        
+        plot_data2 = pd.DataFrame({
+            'Fraction': np.concatenate([dz_of_interactors, lz_of_interactors]),
+            'Zone': ['DZ'] * len(dz_of_interactors) + ['LZ'] * len(lz_of_interactors)
+        })
+        
+        sns.barplot(data=plot_data2, x='Zone', y='Fraction', ax=axes[1],
+                    palette=['#E74C3C', '#3498DB'], capsize=0.1, errwidth=1.5, ci='sd')
+        
+        # Statistical test
+        stat2, pval2 = stats.ttest_ind(dz_of_interactors, lz_of_interactors, equal_var=False)
+        
+        if pval2 < 0.0001:
+            pval_text2 = '****'
+        elif pval2 < 0.001:
+            pval_text2 = '***'
+        elif pval2 < 0.01:
+            pval_text2 = '**'
+        elif pval2 < 0.05:
+            pval_text2 = '*'
+        else:
+            pval_text2 = 'ns'
+        
+        y_max2 = max(plot_data2['Fraction'].max(), 0.5)
+        axes[1].plot([0, 0, 1, 1], [y_max2*1.05, y_max2*1.1, y_max2*1.1, y_max2*1.05], 'k-', lw=1)
+        axes[1].text(0.5, y_max2*1.12, pval_text2, ha='center', fontsize=12)
+        
+        axes[1].set_xlabel('B-cell Zone')
+        axes[1].set_ylabel('Fraction')
+        axes[1].set_title('Zone Distribution among T-cell Interactors')
+    
+    plt.suptitle(title)
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        logger.info(f"Saved T-cell fraction comparison to {output_path}")
+    
+    plt.close()
+
+
+def plot_violin_with_stats(
+    data: pd.DataFrame,
+    features: List[str],
+    group_col: str,
+    output_path: Optional[str] = None,
+    title: Optional[str] = None,
+    figsize: Tuple[int, int] = (15, 10),
+    n_cols: int = 3
+) -> Dict:
+    """Plot multiple violin plots with statistical annotations
+    
+    Args:
+        data: DataFrame with features and group column
+        features: List of feature columns to plot
+        group_col: Column with group labels
+        output_path: Path to save figure
+        title: Plot title
+        figsize: Figure size
+        n_cols: Number of columns in subplot grid
+        
+    Returns:
+        Dictionary with statistical test results for each feature
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')
+        import seaborn as sns
+        from scipy import stats
+    except ImportError:
+        logger.error("Required packages not installed")
+        raise
+    
+    # Filter to features that exist in data
+    features = [f for f in features if f in data.columns]
+    if len(features) == 0:
+        logger.warning("No valid features to plot")
+        return {}
+    
+    n_features = len(features)
+    n_rows = (n_features + n_cols - 1) // n_cols
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    if n_rows == 1 and n_cols == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = axes.reshape(1, -1)
+    elif n_cols == 1:
+        axes = axes.reshape(-1, 1)
+    
+    results = {}
+    groups = data[group_col].unique().tolist()
+    
+    for idx, feature in enumerate(features):
+        row = idx // n_cols
+        col = idx % n_cols
+        ax = axes[row, col]
+        
+        plot_data = data[[feature, group_col]].dropna()
+        
+        sns.violinplot(
+            data=plot_data,
+            x=group_col,
+            y=feature,
+            ax=ax,
+            inner='box'
+        )
+        
+        # Compute statistics for pairs
+        if len(groups) == 2:
+            g1_data = plot_data[plot_data[group_col] == groups[0]][feature]
+            g2_data = plot_data[plot_data[group_col] == groups[1]][feature]
+            
+            stat, pval = stats.ttest_ind(g1_data, g2_data, equal_var=False)
+            results[feature] = {'statistic': stat, 'pvalue': pval}
+            
+            # Add p-value annotation
+            if pval < 0.0001:
+                pval_text = '****'
+            elif pval < 0.001:
+                pval_text = '***'
+            elif pval < 0.01:
+                pval_text = '**'
+            elif pval < 0.05:
+                pval_text = '*'
+            else:
+                pval_text = 'ns'
+            
+            y_max = plot_data[feature].max()
+            y_range = plot_data[feature].max() - plot_data[feature].min()
+            
+            ax.plot([0, 0, 1, 1], 
+                    [y_max + 0.05*y_range, y_max + 0.1*y_range, 
+                     y_max + 0.1*y_range, y_max + 0.05*y_range], 
+                    'k-', lw=1)
+            ax.text(0.5, y_max + 0.12*y_range, pval_text, ha='center', fontsize=10)
+        
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        ax.set_title(feature, fontsize=10)
+    
+    # Hide empty subplots
+    for idx in range(n_features, n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].set_visible(False)
+    
+    if title:
+        plt.suptitle(title, fontsize=12)
+    
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        logger.info(f"Saved violin plots to {output_path}")
+    
+    plt.close()
+    
+    return results
+
+
+def plot_tcell_distance_spatial(
+    data: pd.DataFrame,
+    x_col: str = 'spat_centroid_x',
+    y_col: str = 'spat_centroid_y',
+    cell_type_col: str = 'cell_type',
+    output_path: Optional[str] = None,
+    title: str = "T-cell Distance Analysis",
+    figsize: Tuple[int, int] = (36, 12),
+    point_size: float = 10
+) -> None:
+    """Plot 3-panel T-cell distance visualization (like notebook)
+    
+    Panel 1: Cell types (DZ, LZ, T-cells)
+    Panel 2: Mean distance to T-cells (inferno colormap)
+    Panel 3: Min distance to T-cells (inferno colormap)
+    
+    Args:
+        data: DataFrame with cell data, coordinates, and T-cell distances
+        x_col: Column for x coordinate
+        y_col: Column for y coordinate
+        cell_type_col: Column with cell type labels
+        output_path: Path to save figure
+        title: Plot title
+        figsize: Figure size
+        point_size: Point size
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')
+        import seaborn as sns
+    except ImportError:
+        logger.error("Required packages not installed")
+        raise
+    
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    
+    # Panel 1: Cell types
+    for cell_type in data[cell_type_col].unique():
+        mask = data[cell_type_col] == cell_type
+        color = CELL_TYPE_COLORS.get(cell_type, '#95A5A6')
+        axes[0].scatter(
+            data.loc[mask, x_col],
+            data.loc[mask, y_col],
+            c=color,
+            s=point_size,
+            alpha=0.7,
+            label=cell_type
+        )
+    axes[0].set_title('Cell Types')
+    axes[0].legend(loc='upper right', fontsize=8)
+    axes[0].set_xlabel('')
+    axes[0].set_ylabel('')
+    axes[0].invert_yaxis()
+    axes[0].set_aspect('equal')
+    
+    # Panel 2: Mean distance to T-cells
+    if 'tcell_mean_distance' in data.columns:
+        scatter1 = axes[1].scatter(
+            data[x_col],
+            data[y_col],
+            c=data['tcell_mean_distance'],
+            cmap='inferno',
+            s=point_size,
+            alpha=0.7
+        )
+        plt.colorbar(scatter1, ax=axes[1], label='Mean Distance')
+        axes[1].set_title('Mean Distance to T-cells')
+    else:
+        axes[1].text(0.5, 0.5, 'Distance data\nnot available', 
+                     ha='center', va='center', transform=axes[1].transAxes)
+    axes[1].set_xlabel('')
+    axes[1].set_ylabel('')
+    axes[1].invert_yaxis()
+    axes[1].set_aspect('equal')
+    
+    # Panel 3: Min distance to T-cells
+    if 'tcell_min_distance' in data.columns:
+        scatter2 = axes[2].scatter(
+            data[x_col],
+            data[y_col],
+            c=data['tcell_min_distance'],
+            cmap='inferno',
+            s=point_size,
+            alpha=0.7
+        )
+        plt.colorbar(scatter2, ax=axes[2], label='Min Distance')
+        axes[2].set_title('Min Distance to T-cells')
+    else:
+        axes[2].text(0.5, 0.5, 'Distance data\nnot available', 
+                     ha='center', va='center', transform=axes[2].transAxes)
+    axes[2].set_xlabel('')
+    axes[2].set_ylabel('')
+    axes[2].invert_yaxis()
+    axes[2].set_aspect('equal')
+    
+    plt.suptitle(title)
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        logger.info(f"Saved T-cell distance plot to {output_path}")
+    
+    plt.close()
+
+
+def plot_correlation_lm(
+    data: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    hue_col: Optional[str] = None,
+    output_path: Optional[str] = None,
+    title: str = "Correlation",
+    figsize: Tuple[int, int] = (8, 6)
+) -> None:
+    """Plot regression line plot for correlation (like notebook lmplot)
+    
+    Args:
+        data: DataFrame with x and y columns
+        x_col: X column name (e.g., 'tcell_mean_distance')
+        y_col: Y column name (e.g., 'min_intensity')
+        hue_col: Optional hue column for different groups
+        output_path: Path to save figure
+        title: Plot title
+        figsize: Figure size
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')
+        import seaborn as sns
+    except ImportError:
+        logger.error("Required packages not installed")
+        raise
+    
+    if hue_col and hue_col in data.columns:
+        hue_order = ['all B-cells', 'LZ B-cells', 'DZ B-cells']
+        palette = {'all B-cells': 'k', 'LZ B-cells': 'tab:blue', 'DZ B-cells': 'tab:red'}
+        
+        g = sns.lmplot(
+            data=data,
+            x=x_col,
+            y=y_col,
+            scatter=False,
+            hue=hue_col,
+            hue_order=[h for h in hue_order if h in data[hue_col].unique()],
+            palette={k: v for k, v in palette.items() if k in data[hue_col].unique()},
+            height=figsize[1],
+            aspect=figsize[0]/figsize[1]
+        )
+    else:
+        g = sns.lmplot(
+            data=data,
+            x=x_col,
+            y=y_col,
+            scatter=False,
+            height=figsize[1],
+            aspect=figsize[0]/figsize[1]
+        )
+    
+    plt.title(title)
+    sns.despine(offset=2, trim=True)
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        logger.info(f"Saved correlation plot to {output_path}")
+    
+    plt.close()
+
+
+def plot_boundary_analysis_per_image(
+    data: pd.DataFrame,
+    x_col: str = 'centroid-1',
+    y_col: str = 'centroid-0',
+    output_path: Optional[str] = None,
+    title: str = "Boundary Analysis",
+    figsize: Tuple[int, int] = (20, 6),
+    point_size: float = 15
+) -> None:
+    """Plot 3-panel boundary analysis for a single image (like notebook)
+    
+    Panel 1: Cell types (DZ vs LZ B-cells)
+    Panel 2: Frequency-based distance to border (heatmap)
+    Panel 3: Border proximity classification (close vs distant)
+    
+    Args:
+        data: DataFrame with boundary analysis results for one image
+        x_col: Column for x coordinate
+        y_col: Column for y coordinate
+        output_path: Path to save figure
+        title: Plot title
+        figsize: Figure size
+        point_size: Point size
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')
+        import seaborn as sns
+        from matplotlib.colors import Normalize
+    except ImportError:
+        logger.error("Required packages not installed")
+        raise
+    
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    
+    # Panel 1: Cell types
+    for cell_type in data['cell_type'].unique():
+        mask = data['cell_type'] == cell_type
+        color = CELL_TYPE_COLORS.get(cell_type, '#95A5A6')
+        axes[0].scatter(
+            data.loc[mask, x_col],
+            data.loc[mask, y_col],
+            c=color,
+            s=point_size,
+            alpha=0.7,
+            label=cell_type
+        )
+    axes[0].set_title('Cell Types')
+    axes[0].legend(loc='upper right', fontsize=8)
+    axes[0].set_xlabel('')
+    axes[0].set_ylabel('')
+    axes[0].invert_yaxis()
+    axes[0].set_aspect('equal')
+    
+    # Panel 2: Frequency-based distance to border (heatmap)
+    if 'frequency_based_distance_to_border' in data.columns:
+        scatter = axes[1].scatter(
+            data[x_col],
+            data[y_col],
+            c=data['frequency_based_distance_to_border'],
+            cmap='inferno',
+            s=point_size,
+            alpha=0.7
+        )
+        # Add colorbar
+        norm = Normalize(vmin=0, vmax=1)
+        sm = plt.cm.ScalarMappable(cmap='inferno', norm=norm)
+        sm.set_array([])
+        plt.colorbar(sm, ax=axes[1], label='Distance to Border')
+        axes[1].set_title('Frequency-based Distance to Border')
+    else:
+        axes[1].text(0.5, 0.5, 'Distance data\nnot available', 
+                     ha='center', va='center', transform=axes[1].transAxes)
+    axes[1].set_xlabel('')
+    axes[1].set_ylabel('')
+    axes[1].invert_yaxis()
+    axes[1].set_aspect('equal')
+    
+    # Panel 3: Border proximity classification
+    if 'border_proximity' in data.columns:
+        proximity_colors = {'close': '#F1C40F', 'distant': '#7F8C8D'}
+        for prox in ['close', 'distant']:
+            if prox in data['border_proximity'].values:
+                mask = data['border_proximity'] == prox
+                axes[2].scatter(
+                    data.loc[mask, x_col],
+                    data.loc[mask, y_col],
+                    c=proximity_colors[prox],
+                    s=point_size,
+                    alpha=0.7,
+                    label=prox
+                )
+        axes[2].legend(loc='upper right', fontsize=8)
+        axes[2].set_title('Border Proximity')
+    axes[2].set_xlabel('')
+    axes[2].set_ylabel('')
+    axes[2].invert_yaxis()
+    axes[2].set_aspect('equal')
+    
+    plt.suptitle(title)
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        logger.info(f"Saved boundary analysis plot to {output_path}")
+    
+    plt.close()
+
+
+def plot_feature_importance_colored(
+    importance: np.ndarray,
+    feature_names: List[str],
+    output_path: Optional[str] = None,
+    feature_color_dict: Optional[Dict[str, str]] = None,
+    title: str = "Feature Importance",
+    n_features: int = 20,
+    figsize: Tuple[int, int] = (10, 8)
+) -> pd.DataFrame:
+    """Plot feature importance with custom coloring
+    
+    Args:
+        importance: Array of importance values
+        feature_names: List of feature names
+        output_path: Path to save figure
+        feature_color_dict: Dict mapping feature names to colors
+        title: Plot title
+        n_features: Number of top features to show
+        figsize: Figure size
+        
+    Returns:
+        DataFrame with sorted feature importance
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('Agg')
+    except ImportError:
+        logger.error("matplotlib not installed")
+        raise
+    
+    # Create DataFrame and sort
+    imp_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': importance
+    }).sort_values('importance', ascending=False)
+    
+    # Plot top features
+    top_features = imp_df.head(n_features)
+    
+    # Get colors
+    if feature_color_dict:
+        colors = [feature_color_dict.get(f, '#3498DB') for f in top_features['feature']]
+    else:
+        colors = '#3498DB'
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.barh(
+        range(len(top_features)),
+        top_features['importance'],
+        color=colors
+    )
+    
+    ax.set_yticks(range(len(top_features)))
+    ax.set_yticklabels(top_features['feature'])
+    ax.invert_yaxis()
+    ax.set_xlabel('Importance')
+    ax.set_title(title)
+    
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        logger.info(f"Saved feature importance plot to {output_path}")
+    
+    plt.close()
+    
+    return imp_df
+

@@ -33,6 +33,8 @@ feature_extraction:
     enabled: true
     dilation_radius: 10
   extract_spatial: true
+  # Germinal center mask directory for inside/outside GC classification
+  gc_mask_dir: "data/dataset1/images/germinal_center_anno"
   protein_measurement:
     enabled: true
     proteins:
@@ -60,6 +62,15 @@ analysis:
     signaling_radius: 30.0  # T-cell signaling radius in microns
     border_threshold: 0.4  # Threshold for DZ/LZ border proximity
   
+  # Filter to only cells inside germinal center (like notebook)
+  filter_gc_inside: true
+  
+  # Feature name mapping file (optional, for readable feature names)
+  feature_description_file: "data/other/chrometric_feature_description.csv"
+  
+  # Raw image directory for overlay visualizations
+  raw_image_dir: "data/dataset1/images/raw/merged"
+  
   # Analysis types to run
   analyses:
     # Cell type detection using GMM thresholding on marker intensities
@@ -72,15 +83,45 @@ analysis:
       enabled: true
       description: "Train classifier to distinguish DZ vs LZ B-cells"
     
-    # T-cell interaction zone analysis
+    # T-cell interaction zone analysis (all B-cells)
     - type: "tcell_interaction"
       enabled: true
       description: "Analyze B-cell features based on proximity to T-cells"
+    
+    # DZ B-cells only: T-cell interaction analysis
+    - type: "tcell_interaction_dz"
+      enabled: true
+      description: "T-cell interaction analysis for DZ B-cells only"
+    
+    # LZ B-cells only: T-cell interaction analysis
+    - type: "tcell_interaction_lz"
+      enabled: true
+      description: "T-cell interaction analysis for LZ B-cells only"
+    
+    # DZ prediction probability analysis
+    - type: "dz_prediction_probability"
+      enabled: true
+      description: "Train on non-interactors, use DZ probability as phenotype proxy"
+    
+    # Fraction of T-cell interactors comparison between DZ/LZ
+    - type: "tcell_fraction_comparison"
+      enabled: true
+      description: "Compare frequency of T-cell interacting B-cells in DZ vs LZ"
     
     # DZ/LZ boundary distance analysis
     - type: "boundary"
       enabled: true
       description: "Analyze chrometric differences near DZ/LZ boundary"
+    
+    # DZ B-cells: close vs distant to boundary
+    - type: "boundary_dz"
+      enabled: true
+      description: "Classify DZ B-cells based on proximity to DZ/LZ boundary"
+    
+    # LZ B-cells: close vs distant to boundary
+    - type: "boundary_lz"
+      enabled: true
+      description: "Classify LZ B-cells based on proximity to DZ/LZ boundary"
     
     # UMAP visualization and clustering
     - type: "umap"

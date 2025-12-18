@@ -27,6 +27,7 @@ def extract_features(
     cell_segmentation: bool = False,
     dilation_radius: int = 10,
     extract_spatial: bool = True,
+    gc_mask_dir: Optional[str] = None,
     state: Optional["PipelineState"] = None,
     resume: bool = False
 ):
@@ -40,6 +41,7 @@ def extract_features(
         cell_segmentation: Perform cell segmentation by dilation
         dilation_radius: Radius for cell boundary dilation
         extract_spatial: Extract spatial coordinates
+        gc_mask_dir: Directory with germinal center mask annotations
         state: Pipeline state manager for tracking progress
         resume: Whether to skip already processed files
     """
@@ -222,6 +224,47 @@ def extract_features(
             
             # Save consolidated protein features
             protein_features.to_csv(os.path.join(consolidated_dir, f"{protein_name}_levels.csv"), index=False)
+    
+    # Measure GC mask intensities (to determine cells inside/outside germinal center)
+    if gc_mask_dir and os.path.exists(gc_mask_dir):
+        gc_mask_dir = os.path.normpath(gc_mask_dir)
+        gc_output_dir = os.path.join(output_dir, "gc_levels")
+        Path(gc_output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Use cell labels if available, otherwise nuclear labels
+        seg_dir = cell_labels_dir if cell_segmentation else labels_dir
+        seg_dir = os.path.normpath(seg_dir)
+        
+        logger.info("Measuring germinal center mask intensities...")
+        seg_files = sorted(glob(os.path.join(seg_dir, "*.tif")))
+        gc_mask_files = sorted(glob(os.path.join(gc_mask_dir, "*.tif")))
+        
+        gc_features = pd.DataFrame()
+        for i in tqdm(range(min(len(seg_files), len(gc_mask_files))), desc="GC mask"):
+            labelled_image = imread(seg_files[i])
+            gc_mask_image = imread(gc_mask_files[i])
+            
+            props = measure.regionprops(labelled_image, gc_mask_image)
+            features = pd.DataFrame()
+            
+            for prop in props:
+                feat_row = pd.DataFrame([{
+                    'label': prop.label,
+                    'int_mean': prop.mean_intensity,
+                    'int_max': prop.max_intensity,
+                    'int_min': prop.min_intensity
+                }])
+                features = pd.concat([features, feat_row], ignore_index=True)
+            
+            img_name = os.path.splitext(os.path.basename(seg_files[i]))[0]
+            features["image"] = img_name
+            features["nuc_id"] = features["image"].astype(str) + "_" + features["label"].astype(str)
+            features.to_csv(os.path.join(gc_output_dir, f"{img_name}.csv"), index=False)
+            gc_features = pd.concat([gc_features, features], ignore_index=True)
+        
+        # Save consolidated GC features
+        gc_features.to_csv(os.path.join(consolidated_dir, "gc_levels.csv"), index=False)
+        logger.info(f"GC mask intensities saved to {os.path.join(consolidated_dir, 'gc_levels.csv')}")
     
     # Add nuc_id to features
     all_features["nuc_id"] = all_features["image"].astype(str) + "_" + all_features["label"].astype(str)

@@ -181,6 +181,8 @@ def extract_features(
     
     # Measure protein intensities
     if protein_dirs:
+        from src.features.intensity_features import measure_intensity_features
+        
         for protein_dir in protein_dirs:
             protein_dir = os.path.normpath(protein_dir)
             if not os.path.exists(protein_dir):
@@ -208,13 +210,28 @@ def extract_features(
                 features = pd.DataFrame()
                 
                 for prop in props:
-                    feat_row = pd.DataFrame([{
-                        'label': prop.label,
-                        'int_mean': prop.mean_intensity,
-                        'int_max': prop.max_intensity,
-                        'int_min': prop.min_intensity
-                    }])
-                    features = pd.concat([features, feat_row], ignore_index=True)
+                    try:
+                        # Use full intensity feature extraction (like notebook)
+                        intensity_feat = measure_intensity_features(
+                            regionmask=prop.image,
+                            intensity=prop.intensity_image,
+                            measure_int_dist=True,
+                            measure_hc_ec_ratios=False  # Don't need HC/EC ratios for protein levels
+                        )
+                        
+                        # Add label
+                        intensity_feat['label'] = prop.label
+                        features = pd.concat([features, intensity_feat], ignore_index=True)
+                    except Exception as e:
+                        # Fallback to basic stats if full extraction fails
+                        logger.debug(f"Full intensity extraction failed for label {prop.label}, using basic stats: {e}")
+                        feat_row = pd.DataFrame([{
+                            'label': prop.label,
+                            'int_mean': prop.mean_intensity,
+                            'int_max': prop.max_intensity,
+                            'int_min': prop.min_intensity
+                        }])
+                        features = pd.concat([features, feat_row], ignore_index=True)
                 
                 img_name = os.path.splitext(os.path.basename(seg_files[i]))[0]
                 features["image"] = img_name
@@ -227,6 +244,8 @@ def extract_features(
     
     # Measure GC mask intensities (to determine cells inside/outside germinal center)
     if gc_mask_dir and os.path.exists(gc_mask_dir):
+        from src.features.intensity_features import measure_intensity_features
+        
         gc_mask_dir = os.path.normpath(gc_mask_dir)
         gc_output_dir = os.path.join(output_dir, "gc_levels")
         Path(gc_output_dir).mkdir(parents=True, exist_ok=True)
@@ -248,13 +267,28 @@ def extract_features(
             features = pd.DataFrame()
             
             for prop in props:
-                feat_row = pd.DataFrame([{
-                    'label': prop.label,
-                    'int_mean': prop.mean_intensity,
-                    'int_max': prop.max_intensity,
-                    'int_min': prop.min_intensity
-                }])
-                features = pd.concat([features, feat_row], ignore_index=True)
+                try:
+                    # Use full intensity feature extraction (like notebook)
+                    intensity_feat = measure_intensity_features(
+                        regionmask=prop.image,
+                        intensity=prop.intensity_image,
+                        measure_int_dist=True,
+                        measure_hc_ec_ratios=False  # Don't need HC/EC ratios for GC mask
+                    )
+                    
+                    # Add label
+                    intensity_feat['label'] = prop.label
+                    features = pd.concat([features, intensity_feat], ignore_index=True)
+                except Exception as e:
+                    # Fallback to basic stats if full extraction fails
+                    logger.debug(f"Full intensity extraction failed for label {prop.label}, using basic stats: {e}")
+                    feat_row = pd.DataFrame([{
+                        'label': prop.label,
+                        'int_mean': prop.mean_intensity,
+                        'int_max': prop.max_intensity,
+                        'int_min': prop.min_intensity
+                    }])
+                    features = pd.concat([features, feat_row], ignore_index=True)
             
             img_name = os.path.splitext(os.path.basename(seg_files[i]))[0]
             features["image"] = img_name

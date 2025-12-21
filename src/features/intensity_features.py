@@ -101,7 +101,7 @@ def intensity_histogram_measures(regionmask: np.ndarray, intensity: np.ndarray):
         return {
             "int_min": np.percentile(masked_intensity, 0),
             "int_d25": np.percentile(masked_intensity, 25),
-            "int_median": np.percentile(masked_intensity, 50),
+            "int_media": np.percentile(masked_intensity, 50),  # Median (matches notebook naming)
             "int_d75": np.percentile(masked_intensity, 75),
             "int_max": np.percentile(masked_intensity, 100),
             "int_mean": np.mean(masked_intensity),
@@ -118,7 +118,7 @@ def intensity_histogram_measures(regionmask: np.ndarray, intensity: np.ndarray):
 def _empty_intensity_features():
     """Return empty intensity features."""
     return {
-        "int_min": np.nan, "int_d25": np.nan, "int_median": np.nan,
+        "int_min": np.nan, "int_d25": np.nan, "int_media": np.nan,  # Median (matches notebook naming)
         "int_d75": np.nan, "int_max": np.nan, "int_mean": np.nan,
         "int_mode": np.nan, "int_sd": np.nan, "kurtosis": np.nan,
         "skewness": np.nan, "entropy": np.nan

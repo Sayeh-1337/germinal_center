@@ -11,6 +11,7 @@ from pathlib import Path
 from cli.commands.preprocess import preprocess_images
 from cli.commands.segment import segment_nuclei
 from cli.commands.extract import extract_features
+from cli.commands.extract_enhanced import extract_enhanced_features
 from cli.commands.analyze import run_analysis
 from cli.commands.pipeline import run_full_pipeline
 from cli.config import load_config, save_config, get_default_config
@@ -233,6 +234,87 @@ Examples:
         help='Extract spatial coordinates (default: True)'
     )
     
+    # Extract-enhanced command (includes advanced features)
+    extract_enhanced_parser = subparsers.add_parser(
+        'extract-enhanced', 
+        help='Extract enhanced chrometric features (includes multi-scale, cell cycle, spatial graph)'
+    )
+    extract_enhanced_parser.add_argument(
+        '--raw-images', '-r',
+        type=str,
+        required=True,
+        help='Directory with raw DAPI images'
+    )
+    extract_enhanced_parser.add_argument(
+        '--labels', '-l',
+        type=str,
+        required=True,
+        help='Directory with segmented label images'
+    )
+    extract_enhanced_parser.add_argument(
+        '--output', '-o',
+        type=str,
+        required=True,
+        help='Output directory for features'
+    )
+    extract_enhanced_parser.add_argument(
+        '--proteins',
+        nargs='+',
+        type=str,
+        help='Directories with protein images for intensity measurement'
+    )
+    extract_enhanced_parser.add_argument(
+        '--cell-segmentation',
+        action='store_true',
+        help='Perform cell segmentation by nuclear boundary dilation'
+    )
+    extract_enhanced_parser.add_argument(
+        '--dilation-radius',
+        type=int,
+        default=10,
+        help='Radius for cell segmentation dilation in pixels (default: 10)'
+    )
+    # Enhanced feature options
+    extract_enhanced_parser.add_argument(
+        '--no-multiscale',
+        action='store_true',
+        help='Skip multi-scale wavelet and fractal features'
+    )
+    extract_enhanced_parser.add_argument(
+        '--no-cell-cycle',
+        action='store_true',
+        help='Skip cell cycle state inference'
+    )
+    extract_enhanced_parser.add_argument(
+        '--no-spatial-graph',
+        action='store_true',
+        help='Skip spatial graph-based features (centrality, Voronoi)'
+    )
+    extract_enhanced_parser.add_argument(
+        '--no-relative',
+        action='store_true',
+        help='Skip relative and interaction features'
+    )
+    extract_enhanced_parser.add_argument(
+        '--k-neighbors',
+        type=int,
+        default=10,
+        help='Number of neighbors for spatial analysis (default: 10)'
+    )
+    extract_enhanced_parser.add_argument(
+        '--wavelet-levels',
+        type=int,
+        default=3,
+        help='Number of wavelet decomposition levels (default: 3)'
+    )
+    extract_enhanced_parser.add_argument(
+        '--density-radii',
+        nargs='+',
+        type=float,
+        default=[25, 50, 100],
+        help='Radii for local density computation in pixels (default: 25 50 100)'
+    )
+    
     # Analyze command
     analyze_parser = subparsers.add_parser('analyze', help='Run analysis on extracted features')
     analyze_parser.add_argument(
@@ -431,6 +513,24 @@ def main():
                 cell_segmentation=args.cell_segmentation,
                 dilation_radius=args.dilation_radius,
                 extract_spatial=args.extract_spatial
+            )
+        
+        elif args.command == 'extract-enhanced':
+            extract_enhanced_features(
+                raw_images_dir=args.raw_images,
+                labels_dir=args.labels,
+                output_dir=args.output,
+                protein_dirs=args.proteins,
+                cell_segmentation=args.cell_segmentation,
+                dilation_radius=args.dilation_radius,
+                extract_spatial=True,
+                extract_multiscale=not args.no_multiscale,
+                extract_cell_cycle=not args.no_cell_cycle,
+                extract_spatial_graph=not args.no_spatial_graph,
+                extract_relative=not args.no_relative,
+                k_neighbors=args.k_neighbors,
+                wavelet_levels=args.wavelet_levels,
+                density_radii=args.density_radii
             )
         
         elif args.command == 'analyze':

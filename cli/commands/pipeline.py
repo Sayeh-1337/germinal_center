@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from cli.commands.preprocess import preprocess_images
 from cli.commands.segment import segment_nuclei
 from cli.commands.extract import extract_features
+from cli.commands.extract_enhanced import extract_enhanced_features
 from cli.commands.analyze import run_analysis
 from cli.state import PipelineState
 
@@ -159,18 +160,50 @@ def run_full_pipeline(
                 # Convert relative path to absolute
                 gc_mask_dir = os.path.normpath(gc_mask_dir)
             
-            extract_features(
-                raw_images_dir=raw_images_dir,
-                labels_dir=labels_dir,
-                output_dir=feat_output_dir,
-                protein_dirs=protein_dirs if protein_dirs else None,
-                cell_segmentation=cell_seg_config.get('enabled', False),
-                dilation_radius=cell_seg_config.get('dilation_radius') or 10,
-                extract_spatial=feat_config.get('extract_spatial', True),
-                gc_mask_dir=gc_mask_dir,
-                state=state,
-                resume=resume
-            )
+            # Check if enhanced features are enabled (default: True)
+            use_enhanced = feat_config.get('use_enhanced_features', True)
+            enhanced_config = feat_config.get('enhanced_features', {})
+            
+            if use_enhanced:
+                logger.info("Using ENHANCED feature extraction (base + advanced features)")
+                
+                # Enhanced feature output directory
+                enhanced_output_dir = feat_config.get('output_dir') or os.path.join(output_dir, 'features_enhanced')
+                
+                extract_enhanced_features(
+                    raw_images_dir=raw_images_dir,
+                    labels_dir=labels_dir,
+                    output_dir=enhanced_output_dir,
+                    protein_dirs=protein_dirs if protein_dirs else None,
+                    cell_segmentation=cell_seg_config.get('enabled', False),
+                    dilation_radius=cell_seg_config.get('dilation_radius') or 10,
+                    extract_spatial=feat_config.get('extract_spatial', True),
+                    gc_mask_dir=gc_mask_dir,
+                    state=state,
+                    resume=resume,
+                    # Enhanced feature options (all enabled by default)
+                    extract_multiscale=enhanced_config.get('extract_multiscale', True),
+                    extract_cell_cycle=enhanced_config.get('extract_cell_cycle', True),
+                    extract_spatial_graph=enhanced_config.get('extract_spatial_graph', True),
+                    extract_relative=enhanced_config.get('extract_relative', True),
+                    k_neighbors=enhanced_config.get('k_neighbors', 10),
+                    wavelet_levels=enhanced_config.get('wavelet_levels', 3),
+                    density_radii=enhanced_config.get('density_radii', [10.0, 25.0, 50.0])
+                )
+            else:
+                logger.info("Using STANDARD feature extraction (base features only)")
+                extract_features(
+                    raw_images_dir=raw_images_dir,
+                    labels_dir=labels_dir,
+                    output_dir=feat_output_dir,
+                    protein_dirs=protein_dirs if protein_dirs else None,
+                    cell_segmentation=cell_seg_config.get('enabled', False),
+                    dilation_radius=cell_seg_config.get('dilation_radius') or 10,
+                    extract_spatial=feat_config.get('extract_spatial', True),
+                    gc_mask_dir=gc_mask_dir,
+                    state=state,
+                    resume=resume
+                )
             state.complete_step('extract')
         except Exception as e:
             state.fail_step('extract', str(e))
@@ -185,11 +218,20 @@ def run_full_pipeline(
         try:
             state.start_step('analyze')
             analysis_config = config.get('analysis', {})
+            feat_config = config.get('feature_extraction', {})
+            use_enhanced = feat_config.get('use_enhanced_features', True)
             
-            # Determine features directory (handle None values)
-            features_dir = os.path.join(output_dir, 'features', 'consolidated_features')
-            if not os.path.exists(features_dir):
-                features_dir = analysis_config.get('features_dir') or os.path.join(output_dir, 'consolidated_features')
+            # Determine features directory based on whether enhanced features were used
+            if use_enhanced:
+                # Enhanced features directory
+                features_dir = os.path.join(output_dir, 'features_enhanced', 'consolidated_features')
+                if not os.path.exists(features_dir):
+                    features_dir = analysis_config.get('features_dir') or os.path.join(output_dir, 'features_enhanced', 'consolidated_features')
+            else:
+                # Standard features directory
+                features_dir = os.path.join(output_dir, 'features', 'consolidated_features')
+                if not os.path.exists(features_dir):
+                    features_dir = analysis_config.get('features_dir') or os.path.join(output_dir, 'consolidated_features')
             
             # Get enabled analyses
             analysis_types = []

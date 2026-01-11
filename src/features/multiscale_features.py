@@ -56,6 +56,7 @@ def extract_wavelet_chromatin_features(
     """
     try:
         import pywt
+        import warnings
     except ImportError:
         logger.warning("PyWavelets not installed. Install with: pip install PyWavelets")
         return _empty_wavelet_features(levels)
@@ -76,8 +77,19 @@ def extract_wavelet_chromatin_features(
         padded = np.zeros(new_shape)
         padded[:shape[0], :shape[1]] = masked_image
         
-        # Perform 2D discrete wavelet transform
-        coeffs = pywt.wavedec2(padded, wavelet, level=levels)
+        # Calculate maximum safe wavelet level based on image size
+        # Max level = floor(log2(min_dimension)) - 1 to avoid boundary effects
+        min_dim = min(new_shape)
+        max_safe_level = max(1, int(np.floor(np.log2(min_dim))) - 2)
+        actual_levels = min(levels, max_safe_level)
+        
+        # Silently reduce levels if needed (no logging to avoid noise)
+        
+        # Perform 2D discrete wavelet transform with appropriate level
+        # Suppress boundary effect warnings since we've already calculated safe levels
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning, message='.*Level value.*')
+            coeffs = pywt.wavedec2(padded, wavelet, level=actual_levels)
         
         features = {}
         
@@ -111,10 +123,10 @@ def extract_wavelet_chromatin_features(
                 features[f'wavelet_anisotropy_l{level}'] = 0
         
         # Cross-scale relationships
-        if levels >= 2:
+        if actual_levels >= 2:
             # Ratio of fine to coarse detail (texture complexity)
             fine_energy = features.get('wavelet_total_energy_l1', 0)
-            coarse_energy = features.get(f'wavelet_total_energy_l{levels}', 0)
+            coarse_energy = features.get(f'wavelet_total_energy_l{actual_levels}', 0)
             if coarse_energy > 0:
                 features['wavelet_fine_coarse_ratio'] = fine_energy / coarse_energy
             else:
@@ -122,8 +134,7 @@ def extract_wavelet_chromatin_features(
         
         return pd.DataFrame([features])
         
-    except Exception as e:
-        logger.debug(f"Wavelet feature extraction failed: {e}")
+    except Exception:
         return _empty_wavelet_features(levels)
 
 
@@ -216,8 +227,7 @@ def compute_fractal_dimension(
             'lacunarity': lacunarity
         }
         
-    except Exception as e:
-        logger.debug(f"Fractal dimension calculation failed: {e}")
+    except Exception:
         return {'fractal_dimension': np.nan, 'lacunarity': np.nan}
 
 
@@ -346,11 +356,16 @@ def _differential_box_counting(
 def analyze_chromatin_domain_sizes(
     intensity_image: np.ndarray,
     mask: np.ndarray,
-    threshold_method: str = 'otsu',
-    min_domain_size: int = 10
+    threshold_method: str = 'adaptive',
+    min_domain_size: int = 5
 ) -> pd.DataFrame:
     """
-    Segment and analyze individual chromatin domains.
+    Segment and analyze individual chromatin domains (heterochromatin foci).
+    
+    Uses improved detection with:
+    - Adaptive thresholding for better foci detection
+    - Morphological operations to separate touching domains
+    - Watershed segmentation to split connected regions
     
     Features:
     - Number of domains
@@ -365,8 +380,8 @@ def analyze_chromatin_domain_sizes(
     Args:
         intensity_image: Grayscale intensity image
         mask: Binary mask for the nucleus
-        threshold_method: 'otsu', 'mean', or 'percentile'
-        min_domain_size: Minimum domain size in pixels
+        threshold_method: 'adaptive' (recommended), 'otsu', 'mean', or 'percentile'
+        min_domain_size: Minimum domain size in pixels (reduced from 10 to 5)
         
     Returns:
         DataFrame with domain statistics
@@ -378,6 +393,10 @@ def analyze_chromatin_domain_sizes(
         return _empty_domain_features()
     
     try:
+        from scipy.ndimage import binary_erosion, binary_dilation, distance_transform_edt
+        from skimage.segmentation import watershed
+        from skimage.feature import peak_local_max
+        
         # Apply mask
         masked = intensity_image.astype(float) * mask
         valid_pixels = masked[mask > 0]
@@ -385,8 +404,15 @@ def analyze_chromatin_domain_sizes(
         if len(valid_pixels) == 0:
             return _empty_domain_features()
         
-        # Threshold to identify heterochromatin domains
-        if threshold_method == 'otsu':
+        # Improved thresholding for domain detection
+        if threshold_method == 'adaptive':
+            # Use higher percentile to detect only bright heterochromatin foci
+            # This creates more distinct domains instead of one large connected region
+            threshold = np.percentile(valid_pixels, 80)
+            # Also require intensity to be above mean + 0.5*std
+            alt_threshold = np.mean(valid_pixels) + 0.5 * np.std(valid_pixels)
+            threshold = max(threshold, alt_threshold)
+        elif threshold_method == 'otsu':
             from skimage.filters import threshold_otsu
             try:
                 threshold = threshold_otsu(valid_pixels)
@@ -398,10 +424,43 @@ def analyze_chromatin_domain_sizes(
             threshold = np.percentile(valid_pixels, 75)
         
         # Binarize (high intensity = heterochromatin)
-        binary = (masked > threshold).astype(int)
+        binary = (masked > threshold).astype(np.uint8)
         
-        # Label connected components
-        labeled, n_domains = ndimage.label(binary)
+        # Apply morphological operations to separate touching domains
+        # Erosion followed by dilation helps separate connected regions
+        eroded = binary_erosion(binary, iterations=1)
+        
+        # Use watershed segmentation to split large connected components
+        # This helps detect multiple domains even when they're touching
+        distance = distance_transform_edt(eroded)
+        
+        # Find local maxima as domain centers
+        try:
+            local_maxi = peak_local_max(
+                distance, 
+                min_distance=3,  # Minimum separation between domains
+                threshold_abs=1,  # Minimum distance value
+                labels=mask.astype(int)
+            )
+            # Create markers from local maxima
+            markers = np.zeros_like(binary, dtype=int)
+            for i, (y, x) in enumerate(local_maxi):
+                markers[y, x] = i + 1
+            
+            # Apply watershed if we have markers
+            if np.max(markers) > 0:
+                labeled = watershed(-distance, markers, mask=binary)
+            else:
+                labeled, _ = ndimage.label(binary)
+        except Exception:
+            # Fall back to simple connected component labeling
+            labeled, _ = ndimage.label(binary)
+        
+        n_domains = np.max(labeled)
+        
+        if n_domains == 0:
+            # Try with original binary (before erosion) if erosion removed everything
+            labeled, n_domains = ndimage.label(binary)
         
         if n_domains == 0:
             return _empty_domain_features()
@@ -431,15 +490,15 @@ def analyze_chromatin_domain_sizes(
             'domain_area_mean': np.mean(domain_areas),
             'domain_area_median': np.median(domain_areas),
             'domain_area_max': np.max(domain_areas),
-            'domain_area_std': np.std(domain_areas),
+            'domain_area_std': np.std(domain_areas) if len(domain_areas) > 1 else 0,
             'domain_area_total': np.sum(domain_areas),
             'domain_area_fraction': np.sum(domain_areas) / np.sum(mask),
             'domain_circularity_mean': np.mean(domain_circularities),
             'domain_circularity_std': np.std(domain_circularities) if len(domain_circularities) > 1 else 0
         }
         
-        # Fit power law to domain size distribution (if enough domains)
-        if len(domain_areas) >= 5:
+        # Fit power law to domain size distribution (reduced threshold from 5 to 3)
+        if len(domain_areas) >= 3:
             try:
                 # Simple power law fit using log-log linear regression
                 sorted_areas = np.sort(domain_areas)[::-1]
@@ -448,8 +507,13 @@ def analyze_chromatin_domain_sizes(
                 log_ranks = np.log(ranks)
                 log_areas = np.log(sorted_areas)
                 
-                coeffs = np.polyfit(log_ranks, log_areas, 1)
-                features['domain_size_power_exponent'] = -coeffs[0]
+                # Ensure valid values
+                valid_mask = np.isfinite(log_ranks) & np.isfinite(log_areas)
+                if np.sum(valid_mask) >= 2:
+                    coeffs = np.polyfit(log_ranks[valid_mask], log_areas[valid_mask], 1)
+                    features['domain_size_power_exponent'] = -coeffs[0]
+                else:
+                    features['domain_size_power_exponent'] = np.nan
             except Exception:
                 features['domain_size_power_exponent'] = np.nan
         else:
@@ -457,8 +521,7 @@ def analyze_chromatin_domain_sizes(
         
         return pd.DataFrame([features])
         
-    except Exception as e:
-        logger.debug(f"Domain analysis failed: {e}")
+    except Exception:
         return _empty_domain_features()
 
 
@@ -552,8 +615,7 @@ def compute_radial_intensity_profile(
         
         return pd.DataFrame([features])
         
-    except Exception as e:
-        logger.debug(f"Radial profile computation failed: {e}")
+    except Exception:
         return _empty_radial_features(n_bins)
 
 

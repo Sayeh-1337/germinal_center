@@ -137,30 +137,56 @@ def extract_enhanced_features(
     
     existing_features_file = os.path.join(consolidated_dir, "nuc_features.csv")
     existing_enhanced_file = os.path.join(enhanced_dir, "enhanced_features.csv")
+    existing_spatial_file = os.path.join(consolidated_dir, "spatial_coordinates.csv")
+    existing_merged_file = os.path.join(consolidated_dir, "all_features_merged.csv")
     
     if resume:
         if os.path.exists(existing_features_file):
             try:
                 all_features = pd.read_csv(existing_features_file)
+                # Ensure merge keys are strings for consistent merging
+                if 'nuc_id' in all_features.columns:
+                    all_features['nuc_id'] = all_features['nuc_id'].astype(str)
+                if 'image' in all_features.columns:
+                    all_features['image'] = all_features['image'].astype(str)
                 logger.info(f"Loaded {len(all_features)} existing feature records")
             except Exception as e:
                 logger.warning(f"Could not load existing features: {e}")
+                all_features = pd.DataFrame()
         
         if os.path.exists(existing_enhanced_file):
             try:
                 all_enhanced = pd.read_csv(existing_enhanced_file)
+                # Ensure merge keys are strings for consistent merging
+                if 'nuc_id' in all_enhanced.columns:
+                    all_enhanced['nuc_id'] = all_enhanced['nuc_id'].astype(str)
+                if 'image' in all_enhanced.columns:
+                    all_enhanced['image'] = all_enhanced['image'].astype(str)
                 logger.info(f"Loaded {len(all_enhanced)} existing enhanced feature records")
             except Exception as e:
                 logger.warning(f"Could not load existing enhanced features: {e}")
+                all_enhanced = pd.DataFrame()
     
     failed_images = []
     
-    for idx, (i, raw_file, label_file) in enumerate(tqdm(files_to_process, desc="Extracting features")):
+    # If resume and no files to process, we'll just do the merge at the end
+    # Main progress bar for images (only if there are files to process)
+    if len(files_to_process) > 0:
+        pbar_images = tqdm(files_to_process, desc="Processing images", unit="image")
+    else:
+        pbar_images = None
+        logger.info("All images already processed. Proceeding to merge step...")
+    
+    for idx, (i, raw_file, label_file) in enumerate(pbar_images if pbar_images else []):
         filename = os.path.basename(label_file)
         img_name = os.path.splitext(filename)[0]
+        if pbar_images:
+            pbar_images.set_description(f"Processing {img_name}")
         
         try:
             # ===== Standard chrometric features =====
+            if pbar_images:
+                pbar_images.set_postfix_str("Extracting base features...")
             features = run_nuclear_chromatin_feat_ext(
                 raw_file,
                 label_file,
@@ -189,10 +215,12 @@ def extract_enhanced_features(
             props = measure.regionprops(label_image, raw_image)
             
             if extract_multiscale:
-                logger.debug(f"Extracting multi-scale features for {img_name}")
+                if pbar_images:
+                    pbar_images.set_postfix_str(f"Multi-scale ({len(props)} nuclei)...")
                 multiscale_list = []
                 
-                for prop in props:
+                # Progress bar for multiscale feature extraction
+                for prop in tqdm(props, desc=f"Multi-scale", leave=False, ncols=80):
                     try:
                         ms_feat = extract_all_multiscale_features(
                             prop.intensity_image,
@@ -201,18 +229,20 @@ def extract_enhanced_features(
                         )
                         ms_feat['label'] = prop.label
                         multiscale_list.append(ms_feat)
-                    except Exception as e:
-                        logger.debug(f"Multi-scale failed for nucleus {prop.label}: {e}")
+                    except Exception:
+                        pass  # Skip failed nuclei silently
                 
                 if multiscale_list:
                     multiscale_df = pd.concat(multiscale_list, ignore_index=True)
                     enhanced_features = pd.concat([enhanced_features, multiscale_df], axis=1)
             
             if extract_cell_cycle:
-                logger.debug(f"Inferring cell cycle for {img_name}")
+                if pbar_images:
+                    pbar_images.set_postfix_str(f"Cell cycle ({len(props)} nuclei)...")
                 cc_list = []
                 
-                for prop in props:
+                # Progress bar for cell cycle feature extraction
+                for prop in tqdm(props, desc="Cell cycle", leave=False, ncols=80):
                     try:
                         cc_feat = compute_cell_cycle_features(
                             prop.intensity_image,
@@ -220,12 +250,14 @@ def extract_enhanced_features(
                         )
                         cc_feat['label'] = prop.label
                         cc_list.append(cc_feat)
-                    except Exception as e:
-                        logger.debug(f"Cell cycle failed for nucleus {prop.label}: {e}")
+                    except Exception:
+                        pass  # Skip failed nuclei silently
                 
                 if cc_list:
                     cc_df = pd.concat(cc_list, ignore_index=True)
                     # Infer cell cycle state
+                    if pbar_images:
+                        pbar_images.set_postfix_str("Inferring cell cycle states...")
                     combined_for_cc = pd.merge(features, cc_df, on='label', how='left')
                     cc_predictions = infer_cell_cycle_state(combined_for_cc)
                     
@@ -238,26 +270,41 @@ def extract_enhanced_features(
             if not enhanced_features.empty:
                 if 'label' in enhanced_features.columns:
                     enhanced_features = enhanced_features.drop('label', axis=1, errors='ignore')
-                enhanced_features['image'] = img_name
-                enhanced_features['nuc_id'] = features['nuc_id'].values
+                enhanced_features['image'] = str(img_name)
+                enhanced_features['nuc_id'] = features['nuc_id'].astype(str).values
             
             # Accumulate features
+            if pbar_images:
+                pbar_images.set_postfix_str("Saving...")
             all_features = pd.concat([all_features, features], ignore_index=True)
             if not enhanced_features.empty:
                 all_enhanced = pd.concat([all_enhanced, enhanced_features], ignore_index=True)
             
+            # Update progress bar with completion info
+            if pbar_images:
+                pbar_images.set_postfix_str(f"Done ({len(features)} nuclei)")
+            
         except Exception as e:
             logger.warning(f"Failed to extract features from {filename}: {str(e)}")
             failed_images.append({'image': img_name, 'error': str(e)})
+            if pbar_images:
+                pbar_images.set_postfix_str(f"Failed: {str(e)[:30]}")
         
         # Mark file as processed and save periodically
         if state:
             state.mark_file_processed('extract', filename)
             if (idx + 1) % 2 == 0:
+                if pbar_images:
+                    pbar_images.set_postfix_str("Saving checkpoint...")
                 all_features.to_csv(existing_features_file, index=False)
                 if not all_enhanced.empty:
                     all_enhanced.to_csv(existing_enhanced_file, index=False)
                 state.save()
+                if pbar_images:
+                    pbar_images.set_postfix_str("Checkpoint saved")
+    
+    if pbar_images:
+        pbar_images.close()
     
     # Log failed images summary
     if failed_images:
@@ -268,24 +315,58 @@ def extract_enhanced_features(
     
     # ===== Extract spatial coordinates =====
     if extract_spatial:
-        logger.info("Extracting spatial coordinates...")
-        for label_file in label_files:
-            labelled_image = imread(label_file)
-            img_name = os.path.splitext(os.path.basename(label_file))[0]
-            
-            spatial_data = pd.DataFrame(
-                measure.regionprops_table(labelled_image, properties=("label", "centroid"))
-            )
-            spatial_data["image"] = img_name
-            spatial_data["nuc_id"] = spatial_data["image"].astype(str) + "_" + spatial_data["label"].astype(str)
-            all_spatial = pd.concat([all_spatial, spatial_data], ignore_index=True)
+        # Check if spatial coordinates already exist
+        if resume and os.path.exists(existing_spatial_file):
+            try:
+                all_spatial = pd.read_csv(existing_spatial_file)
+                # Ensure merge keys are strings
+                if 'nuc_id' in all_spatial.columns:
+                    all_spatial['nuc_id'] = all_spatial['nuc_id'].astype(str)
+                if 'image' in all_spatial.columns:
+                    all_spatial['image'] = all_spatial['image'].astype(str)
+                logger.info(f"Loaded {len(all_spatial)} existing spatial coordinate records")
+            except Exception as e:
+                logger.warning(f"Could not load existing spatial coordinates: {e}, recomputing...")
+                all_spatial = pd.DataFrame()
+        
+        # Only recompute if we don't have spatial data yet
+        if all_spatial.empty:
+            logger.info("Extracting spatial coordinates...")
+            for label_file in tqdm(label_files, desc="Extracting spatial coordinates", leave=False):
+                labelled_image = imread(label_file)
+                img_name = os.path.splitext(os.path.basename(label_file))[0]
+                
+                spatial_data = pd.DataFrame(
+                    measure.regionprops_table(labelled_image, properties=("label", "centroid"))
+                )
+                spatial_data["image"] = img_name
+                spatial_data["nuc_id"] = spatial_data["image"].astype(str) + "_" + spatial_data["label"].astype(str)
+                all_spatial = pd.concat([all_spatial, spatial_data], ignore_index=True)
+        else:
+            logger.info(f"Using existing spatial coordinates ({len(all_spatial)} records)")
     
     # ===== Spatial graph and relative features (require all cells) =====
-    if extract_spatial and not all_spatial.empty:
+    # Check if spatial graph features are already computed (when resume=True and enhanced features exist)
+    spatial_features_computed = False
+    if resume and not all_enhanced.empty:
+        # Check if spatial graph features are present (look for characteristic column names)
+        spatial_feature_columns = [col for col in all_enhanced.columns if any(
+            keyword in col.lower() for keyword in ['degree', 'centrality', 'clustering', 'voronoi', 'density', 'morans']
+        )]
+        spatial_features_computed = len(spatial_feature_columns) > 0
+        if spatial_features_computed:
+            logger.info(f"Spatial graph features already computed ({len(spatial_feature_columns)} spatial columns found)")
+    
+    if extract_spatial and not all_spatial.empty and not spatial_features_computed:
         logger.info("Computing spatial graph and relative features...")
+        unique_images = all_spatial['image'].unique()
+        
+        # Progress bar for spatial analysis
+        pbar_spatial = tqdm(unique_images, desc="Spatial analysis", unit="image")
         
         # Group by image for spatial analysis
-        for img_name in all_spatial['image'].unique():
+        for img_name in pbar_spatial:
+            pbar_spatial.set_description(f"Spatial [{img_name}]")
             img_mask = all_spatial['image'] == img_name
             img_spatial = all_spatial[img_mask].reset_index(drop=True)
             img_features = all_features[all_features['image'] == img_name].reset_index(drop=True)
@@ -295,7 +376,8 @@ def extract_enhanced_features(
             
             try:
                 if extract_spatial_graph:
-                    logger.debug(f"Computing spatial graph features for {img_name}")
+                    if pbar_spatial:
+                        pbar_spatial.set_postfix_str(f"Graph ({len(img_spatial)} cells)...")
                     graph_feat = extract_all_spatial_graph_features(
                         img_spatial,
                         features=img_features,
@@ -304,12 +386,13 @@ def extract_enhanced_features(
                         compute_autocorrelation=True
                     )
                     if not graph_feat.empty:
-                        graph_feat['image'] = img_name
-                        graph_feat['nuc_id'] = img_spatial['nuc_id'].values
+                        graph_feat['image'] = str(img_name)
+                        graph_feat['nuc_id'] = img_spatial['nuc_id'].astype(str).values
                         all_enhanced = pd.concat([all_enhanced, graph_feat], ignore_index=True)
                 
                 if extract_relative:
-                    logger.debug(f"Computing relative features for {img_name}")
+                    if pbar_spatial:
+                        pbar_spatial.set_postfix_str(f"Relative ({len(img_spatial)} cells)...")
                     relative_feat = extract_all_relative_features(
                         img_features,
                         img_spatial,
@@ -317,11 +400,17 @@ def extract_enhanced_features(
                         compute_gradients=True
                     )
                     if not relative_feat.empty:
-                        relative_feat['image'] = img_name
-                        relative_feat['nuc_id'] = img_spatial['nuc_id'].values
+                        relative_feat['image'] = str(img_name)
+                        relative_feat['nuc_id'] = img_spatial['nuc_id'].astype(str).values
                         
                         # Merge with existing enhanced features
-                        if 'nuc_id' in all_enhanced.columns:
+                        if not all_enhanced.empty and 'nuc_id' in all_enhanced.columns:
+                            # Ensure consistent types before merge
+                            all_enhanced['nuc_id'] = all_enhanced['nuc_id'].astype(str)
+                            all_enhanced['image'] = all_enhanced['image'].astype(str)
+                            relative_feat['nuc_id'] = relative_feat['nuc_id'].astype(str)
+                            relative_feat['image'] = relative_feat['image'].astype(str)
+                            
                             all_enhanced = pd.merge(
                                 all_enhanced, relative_feat,
                                 on=['image', 'nuc_id'], how='outer'
@@ -329,8 +418,18 @@ def extract_enhanced_features(
                         else:
                             all_enhanced = pd.concat([all_enhanced, relative_feat], ignore_index=True)
                 
+                if pbar_spatial:
+                    pbar_spatial.set_postfix_str("Done")
+                
             except Exception as e:
                 logger.warning(f"Spatial analysis failed for {img_name}: {e}")
+                if pbar_spatial:
+                    pbar_spatial.set_postfix_str(f"Failed: {str(e)[:30]}")
+        
+        if pbar_spatial:
+            pbar_spatial.close()
+    elif extract_spatial and not all_spatial.empty and spatial_features_computed:
+        logger.info("Spatial graph features already computed, skipping recomputation")
     
     # ===== Cell segmentation (optional) =====
     if cell_segmentation:
@@ -384,8 +483,7 @@ def extract_enhanced_features(
                         )
                         intensity_feat['label'] = prop.label
                         features_list.append(intensity_feat)
-                    except Exception as e:
-                        logger.debug(f"Intensity extraction failed for label {prop.label}: {e}")
+                    except Exception:
                         feat_row = pd.DataFrame([{
                             'label': prop.label,
                             'int_mean': prop.mean_intensity,
@@ -436,8 +534,7 @@ def extract_enhanced_features(
                     )
                     intensity_feat['label'] = prop.label
                     features_list.append(intensity_feat)
-                except Exception as e:
-                    logger.debug(f"GC intensity extraction failed for label {prop.label}: {e}")
+                except Exception:
                     feat_row = pd.DataFrame([{
                         'label': prop.label,
                         'int_mean': prop.mean_intensity,
@@ -468,10 +565,27 @@ def extract_enhanced_features(
         all_enhanced = all_enhanced.loc[:, ~all_enhanced.columns.duplicated()]
         all_enhanced.to_csv(os.path.join(enhanced_dir, "enhanced_features.csv"), index=False)
         
+        # Ensure consistent types for merge keys (fix int64 vs object mismatch)
+        if 'nuc_id' in all_features.columns:
+            all_features['nuc_id'] = all_features['nuc_id'].astype(str)
+        if 'image' in all_features.columns:
+            all_features['image'] = all_features['image'].astype(str)
+        if 'nuc_id' in all_enhanced.columns:
+            all_enhanced['nuc_id'] = all_enhanced['nuc_id'].astype(str)
+        if 'image' in all_enhanced.columns:
+            all_enhanced['image'] = all_enhanced['image'].astype(str)
+        
         # Merge all features
-        merged_features = pd.merge(all_features, all_enhanced, on=['image', 'nuc_id'], how='left')
-        merged_features.to_csv(os.path.join(consolidated_dir, "all_features_merged.csv"), index=False)
-        logger.info(f"Merged features saved to {os.path.join(consolidated_dir, 'all_features_merged.csv')}")
+        try:
+            merged_features = pd.merge(all_features, all_enhanced, on=['image', 'nuc_id'], how='left')
+            merged_features.to_csv(os.path.join(consolidated_dir, "all_features_merged.csv"), index=False)
+            logger.info(f"Merged features saved to {os.path.join(consolidated_dir, 'all_features_merged.csv')}")
+        except Exception as e:
+            logger.warning(f"Could not merge features: {e}")
+            # Save separately as fallback
+            all_features.to_csv(os.path.join(consolidated_dir, "nuc_features_only.csv"), index=False)
+            all_enhanced.to_csv(os.path.join(consolidated_dir, "enhanced_features_only.csv"), index=False)
+            logger.info("Saved features separately due to merge failure")
     
     # Save final state
     if state:

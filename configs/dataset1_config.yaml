@@ -28,7 +28,7 @@ segmentation:
 feature_extraction:
   raw_image_dir: null  # Will use dapi_scaled automatically
   labels_dir: null  # Will use segmented_nucleus automatically
-  output_dir: null  # Will default to output_dir/features
+  output_dir: null  # Will default to output_dir/features or features_enhanced
   cell_segmentation:
     enabled: true
     dilation_radius: 10
@@ -42,10 +42,32 @@ feature_extraction:
         image_dir: "data/dataset1/processed/cd3"
       - name: "aicda"
         image_dir: "data/dataset1/processed/aicda"
+  
+  # Enhanced features (NEW) - extracts 300+ features instead of 200+
+  # Set to false to use standard feature extraction only
+  use_enhanced_features: true
+  enhanced_features:
+    # Multi-scale wavelet and fractal analysis
+    extract_multiscale: true
+    wavelet_levels: 3  # Number of wavelet decomposition levels
+    
+    # Cell cycle state inference (G1, S, G2/M phases)
+    extract_cell_cycle: true
+    
+    # Spatial graph-based features (centrality, Voronoi tessellation)
+    extract_spatial_graph: true
+    k_neighbors: 10  # Number of neighbors for spatial graph
+    
+    # Relative and interaction features (neighborhood normalization)
+    extract_relative: true
+    density_radii: [10.0, 25.0, 50.0]  # Radii for local density computation
 
 # Analysis configuration
 analysis:
-  features_dir: null  # Will use output_dir/features/consolidated_features
+  # Features directory: auto-detected based on use_enhanced_features flag
+  # - If enhanced: output_dir/features_enhanced/consolidated_features
+  # - If standard: output_dir/features/consolidated_features
+  features_dir: null
   output_dir: null  # Will default to output_dir/analysis
   metadata: null  # Optional metadata file for correlation analysis
   

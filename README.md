@@ -392,6 +392,12 @@ This document covers:
 - Statistical methods (Welch's t-test, FDR correction)
 - Interpretation of results
 
+For enhanced features (wavelet, fractal, cell cycle), see:
+
+📖 **[docs/ENHANCED_FEATURES_GUIDE.md](docs/ENHANCED_FEATURES_GUIDE.md)** - Complete guide to interpreting enhanced features CSV columns
+
+📖 **[docs/PIPELINE_ENHANCEMENTS.md](docs/PIPELINE_ENHANCEMENTS.md)** - Technical documentation for enhanced analysis modules
+
 ---
 
 # Reproducing the paper results
@@ -484,9 +490,12 @@ germinal_center/
 │   ├── dataset1_config.yaml
 │   └── dataset3_config.yaml
 ├── scripts/                      # Utility scripts
-│   └── visualize_segmentation.py # Segmentation visualization tool
+│   ├── visualize_segmentation.py # Segmentation visualization tool
+│   └── visualize_enhanced_features.py # Enhanced features visualization
 ├── docs/                         # Documentation
-│   └── SCIENTIFIC_METHODOLOGY.md # Detailed scientific methodology
+│   ├── SCIENTIFIC_METHODOLOGY.md # Detailed scientific methodology
+│   ├── ENHANCED_FEATURES_GUIDE.md # Enhanced features interpretation guide
+│   └── PIPELINE_ENHANCEMENTS.md  # Enhanced pipeline documentation
 ├── tests/                        # Test suite
 │   └── test_pipeline.py
 ├── environment.yml               # Conda environment

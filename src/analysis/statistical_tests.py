@@ -390,3 +390,104 @@ def test_group_difference(
         'test': test
     }
 
+
+def run_model_comparison(
+    X: pd.DataFrame,
+    y: Union[pd.Series, np.ndarray],
+    models: List[str] = None,
+    n_folds: int = 10,
+    random_state: int = 42,
+    balance: bool = True,
+    tune_hyperparameters: bool = False,
+    n_iter: int = 50,
+    use_mlflow: bool = False,
+    mlflow_experiment_name: str = "model_comparison",
+    output_dir: Optional[str] = None
+) -> Dict:
+    """Compare multiple models and return best model results.
+    
+    This function provides a unified interface for model comparison that is
+    compatible with the existing analysis code while leveraging the new
+    MLOps infrastructure.
+    
+    Args:
+        X: Feature DataFrame
+        y: Labels (Series or array)
+        models: List of model names to compare (default: ['random_forest', 'xgboost'])
+        n_folds: Number of CV folds
+        random_state: Random seed
+        balance: Whether to balance classes using undersampling
+        tune_hyperparameters: Whether to perform hyperparameter tuning
+        n_iter: Number of iterations for random search (if tuning)
+        use_mlflow: Whether to log to MLflow
+        mlflow_experiment_name: Name of MLflow experiment
+        output_dir: Directory to save results
+        
+    Returns:
+        Dictionary with results compatible with run_cv_classification output:
+        - balanced_accuracy: Overall balanced accuracy
+        - cv_mean: Mean CV balanced accuracy
+        - cv_std: Std of CV balanced accuracy
+        - confusion_matrix: Confusion matrix
+        - classification_report: Classification report dict
+        - predictions: Predictions array
+        - probabilities: Probability array
+        - true_labels: True labels
+        - classes: Class labels
+        - feature_importance: Feature importance DataFrame
+        - best_model: Name of best model
+        - comparison_results: Comparison DataFrame
+        - all_models: All model results
+    """
+    from src.ml.model_comparison import ModelComparison
+    from sklearn.metrics import confusion_matrix, classification_report
+    
+    if models is None:
+        models = ['random_forest', 'xgboost']
+    
+    # Run comparison
+    comparer = ModelComparison(
+        models=models,
+        n_folds=n_folds,
+        random_state=random_state,
+        balance=balance,
+        tune_hyperparameters=tune_hyperparameters,
+        n_iter=n_iter,
+        use_mlflow=use_mlflow,
+        mlflow_experiment_name=mlflow_experiment_name
+    )
+    
+    comparison_df = comparer.compare_models(X, y, output_dir)
+    
+    # Get best model results
+    best_result = comparer.get_best_result()
+    
+    # Format results to match existing interface
+    formatted_result = {
+        'balanced_accuracy': best_result['cv_balanced_accuracy_mean'],
+        'cv_mean': best_result['cv_balanced_accuracy_mean'],
+        'cv_std': best_result['cv_balanced_accuracy_std'],
+        'cv_scores': [m['balanced_accuracy'] for m in best_result['fold_metrics']],
+        'confusion_matrix': confusion_matrix(
+            best_result['true_labels'],
+            best_result['predictions']
+        ),
+        'classification_report': classification_report(
+            best_result['true_labels'],
+            best_result['predictions'],
+            output_dict=True
+        ),
+        'predictions': best_result['predictions'],
+        'probabilities': best_result['probabilities'],
+        'true_labels': best_result['true_labels'],
+        'classes': best_result['classes'],
+        'feature_importance': best_result['feature_importance'],
+        'best_model': comparer.best_model_name,
+        'comparison_results': comparison_df,
+        'all_models': comparer.results
+    }
+    
+    logger.info(f"Best model: {comparer.best_model_name}")
+    logger.info(f"  Balanced accuracy: {formatted_result['cv_mean']:.3f} ± {formatted_result['cv_std']:.3f}")
+    
+    return formatted_result

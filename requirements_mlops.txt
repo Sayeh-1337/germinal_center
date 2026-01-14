@@ -1,0 +1,18 @@
+# MLOps dependencies for experiment tracking and model comparison
+# Install with: pip install -r requirements_mlops.txt
+
+# MLflow - experiment tracking and model registry
+mlflow>=2.0.0
+
+# ZenML - ML pipeline orchestration (optional)
+# zenml[mlflow]>=0.40.0
+
+# Additional ML frameworks for model comparison
+xgboost>=1.5.0
+lightgbm>=3.3.0
+
+# Model interpretation (optional)
+# shap>=0.40.0
+
+# Hyperparameter tuning (optional)
+# optuna>=3.0.0

@@ -242,10 +242,34 @@ def run_full_pipeline(
             if not analysis_types:
                 analysis_types = ['cell_type']  # Default
             
+            # Automatically add enhanced visualization if enhanced features are used
+            if use_enhanced and 'enhanced_visualization' not in analysis_types and 'enhanced_features' not in analysis_types:
+                # Check if enhanced features CSV exists
+                enhanced_features_path = os.path.join(output_dir, 'features_enhanced', 'enhanced_features', 'enhanced_features.csv')
+                if os.path.exists(enhanced_features_path):
+                    logger.info("Enhanced features detected. Automatically adding enhanced visualization to analysis.")
+                    analysis_types.append('enhanced_visualization')
+            
             analysis_output_dir = analysis_config.get('output_dir') or os.path.join(output_dir, 'analysis')
             
             # Get spatial and visualization parameters
             spatial_config = analysis_config.get('spatial_parameters', {})
+            
+            # Get MLOps/model comparison config
+            mlops_config = analysis_config.get('mlops', {})
+            model_comparison_config = mlops_config.get('model_comparison', {})
+            mlflow_config = mlops_config.get('mlflow', {})
+            
+            # Build model config for analysis
+            model_config = None
+            if model_comparison_config.get('enabled', False):
+                model_config = {
+                    'enabled': True,
+                    'models': model_comparison_config.get('models', ['random_forest', 'xgboost']),
+                    'tune_hyperparameters': model_comparison_config.get('tune_hyperparameters', False),
+                    'use_mlflow': mlflow_config.get('enabled', False),
+                    'mlflow_experiment_name': mlflow_config.get('experiment_name', 'germinal_center_analysis')
+                }
             
             run_analysis(
                 features_dir=features_dir,
@@ -262,7 +286,8 @@ def run_full_pipeline(
                 n_permutations=analysis_config.get('n_permutations', 10000),
                 filter_gc_inside=analysis_config.get('filter_gc_inside', False),
                 feature_description_file=analysis_config.get('feature_description_file'),
-                raw_image_dir=analysis_config.get('raw_image_dir')
+                raw_image_dir=analysis_config.get('raw_image_dir'),
+                model_config=model_config
             )
             state.complete_step('analyze')
         except Exception as e:

@@ -51,3 +51,8 @@ tornado>=6.0.0
 
 # CLI dependencies
 pyyaml>=5.4
+
+# MLOps (optional - for experiment tracking and model comparison)
+# Install with: pip install -r requirements_mlops.txt
+# or: pip install xgboost mlflow
+xgboost>=1.5.0

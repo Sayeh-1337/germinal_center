@@ -543,6 +543,57 @@ output/
 
 The `all_features_merged.csv` file combines all features by `nuc_id`, providing a single comprehensive feature matrix for downstream analysis.
 
+### Feature Interpretation
+
+For detailed interpretation of enhanced features, see **[Enhanced Features Interpretation Guide](ENHANCED_FEATURES_GUIDE.md)**. This guide explains:
+- Wavelet feature meanings and biological interpretation
+- Cell cycle phase indicators
+- DZ/LZ characteristic patterns
+- How to use features for classification and analysis
+
+### Enhanced Features Visualization
+
+Enhanced features visualization is **automatically included** in the pipeline when enhanced features are detected. It can also be run manually or as a specific analysis type.
+
+#### Automatic Integration
+
+When running the full pipeline with enhanced features, visualization is automatically added:
+
+```bash
+gc-pipeline pipeline --config configs/dataset1_config.yaml
+# Enhanced visualization runs automatically if enhanced features are found
+```
+
+#### Manual Execution
+
+You can also run it manually or as a specific analysis type:
+
+```bash
+# As part of analysis command
+gc-pipeline analyze \
+    --features data/dataset1/processed/features_enhanced/consolidated_features \
+    --output data/dataset1/processed/analysis \
+    --analysis-type enhanced_visualization
+
+# Or standalone script
+python scripts/visualize_enhanced_features.py \
+    --features data/dataset1/processed/features_enhanced/enhanced_features/enhanced_features.csv \
+    --output data/dataset1/processed/analysis/enhanced_features_analysis/ \
+    --group-by cell_cycle_phase
+```
+
+#### Generated Visualizations
+
+The visualization automatically generates:
+- Feature distribution plots (stratified by cell cycle phase)
+- Cell cycle phase analysis
+- Wavelet scale analysis
+- DZ/LZ comparison (if labels available)
+- Feature correlation matrix
+- Summary statistics CSV
+
+All figures are saved to `{output_dir}/enhanced_features_analysis/`.
+
 ---
 
 ## Dependencies
@@ -560,6 +611,114 @@ PyWavelets>=1.1.0      # For wavelet features
 ```
 
 All dependencies are included in the existing `requirements.txt`.
+
+---
+
+## MLOps Integration
+
+**Module:** `src/ml/`
+
+### Overview
+
+The pipeline includes production-grade ML infrastructure for:
+- Model comparison (Random Forest, XGBoost, LightGBM, etc.)
+- Experiment tracking with MLflow
+- Optional ZenML pipeline orchestration
+- Hyperparameter tuning
+
+### Installation
+
+```bash
+# Core MLOps dependencies
+pip install xgboost
+
+# Full MLOps stack (optional)
+pip install -r requirements_mlops.txt
+```
+
+### Model Comparison
+
+Compare multiple models with cross-validation:
+
+```python
+from src.ml import ModelComparison
+
+comparer = ModelComparison(
+    models=['random_forest', 'xgboost', 'lightgbm'],
+    n_folds=10,
+    tune_hyperparameters=False,
+    use_mlflow=True
+)
+
+results_df = comparer.compare_models(X, y, output_dir='results/')
+print(f"Best model: {comparer.best_model_name}")
+print(f"Accuracy: {comparer.get_best_result()['cv_balanced_accuracy_mean']:.3f}")
+```
+
+### Available Models
+
+| Model | Name | Description |
+|-------|------|-------------|
+| Random Forest | `random_forest`, `rf` | Ensemble of decision trees |
+| XGBoost | `xgboost`, `xgb` | Gradient boosted trees |
+| LightGBM | `lightgbm`, `lgbm` | Light gradient boosting |
+| Logistic Regression | `logistic_regression`, `lr` | Linear classifier |
+| SVM | `svm`, `svc` | Support vector machine |
+
+### MLflow Tracking
+
+```python
+from src.ml import MLflowExperimentTracker
+
+tracker = MLflowExperimentTracker(
+    experiment_name="dz_lz_classification",
+    tracking_uri="file:./mlruns"
+)
+
+with tracker.start_run(run_name="experiment_1"):
+    tracker.log_params({"n_estimators": 100})
+    tracker.log_metrics({"accuracy": 0.85, "f1": 0.82})
+    tracker.log_model(model, "classifier")
+
+# Start MLflow UI
+# mlflow ui --backend-store-uri file:./mlruns
+```
+
+### Configuration
+
+Enable model comparison in `config.yaml`:
+
+```yaml
+analysis:
+  mlops:
+    mlflow:
+      enabled: true
+      experiment_name: "germinal_center_analysis"
+      tracking_uri: "file:./mlruns"
+    
+    model_comparison:
+      enabled: true
+      models:
+        - "random_forest"
+        - "xgboost"
+      tune_hyperparameters: false
+```
+
+### ZenML Pipelines (Optional)
+
+For full ML pipeline orchestration:
+
+```python
+from src.ml.pipelines import run_classification
+
+# Run classification with model comparison
+results = run_classification(
+    features_path="data/features/",
+    analysis_type="cell_type",
+    models=["random_forest", "xgboost"],
+    use_mlflow=True
+)
+```
 
 ---
 

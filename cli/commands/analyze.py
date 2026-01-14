@@ -86,7 +86,8 @@ def run_analysis(
     n_permutations: int = 10000,
     filter_gc_inside: bool = False,
     feature_description_file: Optional[str] = None,
-    raw_image_dir: Optional[str] = None
+    raw_image_dir: Optional[str] = None,
+    model_config: Optional[Dict[str, Any]] = None
 ):
     """Run analysis on extracted features
     
@@ -101,6 +102,12 @@ def run_analysis(
         contact_radius: T-cell physical contact radius in microns
         signaling_radius: T-cell signaling radius in microns
         border_threshold: Threshold for DZ/LZ border proximity classification
+        model_config: MLOps model comparison config (optional):
+            - enabled: Enable model comparison
+            - models: List of models to compare
+            - tune_hyperparameters: Whether to tune hyperparameters
+            - use_mlflow: Whether to track with MLflow
+            - mlflow_experiment_name: MLflow experiment name
         generate_plots: Whether to generate visualization plots
         n_permutations: Number of permutations for statistical tests
         filter_gc_inside: Filter to only cells inside germinal center
@@ -218,7 +225,8 @@ def run_analysis(
     if 'cell_type' in analysis_types or 'classification' in analysis_types:
         logger.info("Running cell type classification analysis...")
         results['cell_type'] = run_cell_type_analysis(
-            nuc_features, filtered_features, output_dir, random_seed, generate_plots
+            nuc_features, filtered_features, output_dir, random_seed, generate_plots,
+            model_config=model_config
         )
     
     if 'tcell_interaction' in analysis_types or 'tcell' in analysis_types:
@@ -304,6 +312,12 @@ def run_analysis(
             generate_plots=generate_plots, feature_color_dict=feature_color_dict
         )
     
+    if 'enhanced_visualization' in analysis_types or 'enhanced_features' in analysis_types:
+        logger.info("Running enhanced features visualization...")
+        results['enhanced_visualization'] = run_enhanced_features_visualization(
+            features_dir, output_dir, nuc_features
+        )
+    
     # Save updated features with annotations
     nuc_features.to_csv(os.path.join(output_dir, "nuc_features_annotated.csv"))
     
@@ -384,8 +398,22 @@ def run_cell_type_detection(nuc_features, aicda_levels, cd3_levels, gc_levels, o
     return nuc_features, {'cell_type_counts': cell_type_counts.to_dict()}
 
 
-def run_cell_type_analysis(nuc_features, filtered_features, output_dir, random_seed, generate_plots=True):
-    """Run cell type classification analysis"""
+def run_cell_type_analysis(nuc_features, filtered_features, output_dir, random_seed, generate_plots=True, model_config=None):
+    """Run cell type classification analysis with optional model comparison.
+    
+    Args:
+        nuc_features: DataFrame with nuclear features and cell type labels
+        filtered_features: Preprocessed feature DataFrame
+        output_dir: Output directory
+        random_seed: Random seed for reproducibility
+        generate_plots: Whether to generate visualization plots
+        model_config: Optional dict with model comparison settings:
+            - enabled: Whether to compare multiple models
+            - models: List of model names (e.g., ['random_forest', 'xgboost'])
+            - tune_hyperparameters: Whether to tune hyperparameters
+            - use_mlflow: Whether to track with MLflow
+            - mlflow_experiment_name: MLflow experiment name
+    """
     from src.analysis.statistical_tests import run_cv_classification, find_markers
     
     results_dir = os.path.join(output_dir, "cell_type_analysis")
@@ -421,10 +449,51 @@ def run_cell_type_analysis(nuc_features, filtered_features, output_dir, random_s
     
     logger.info(f"Running DZ vs LZ B-cell classification on {len(bcell_features)} samples...")
     
-    # Run cross-validated classification
-    cv_results = run_cv_classification(
-        bcell_features, bcell_labels, n_folds=10, random_state=random_seed, balance=True
+    # Check if model comparison is enabled
+    use_model_comparison = (
+        model_config is not None and 
+        model_config.get('enabled', False) and
+        len(model_config.get('models', [])) > 0
     )
+    
+    if use_model_comparison:
+        # Use model comparison framework
+        from src.analysis.statistical_tests import run_model_comparison
+        
+        models = model_config.get('models', ['random_forest', 'xgboost'])
+        use_mlflow = model_config.get('use_mlflow', False)
+        mlflow_experiment = model_config.get('mlflow_experiment_name', 'cell_type_classification')
+        tune_hp = model_config.get('tune_hyperparameters', False)
+        
+        logger.info(f"Comparing models: {', '.join(models)}")
+        
+        cv_results = run_model_comparison(
+            bcell_features, 
+            bcell_labels,
+            models=models,
+            n_folds=10, 
+            random_state=random_seed, 
+            balance=True,
+            tune_hyperparameters=tune_hp,
+            use_mlflow=use_mlflow,
+            mlflow_experiment_name=mlflow_experiment,
+            output_dir=results_dir
+        )
+        
+        # Log best model
+        logger.info(f"Best model: {cv_results['best_model']}")
+        
+        # Save model comparison results
+        if 'comparison_results' in cv_results:
+            cv_results['comparison_results'].to_csv(
+                os.path.join(results_dir, "model_comparison.csv"), 
+                index=False
+            )
+    else:
+        # Use standard single-model classification
+        cv_results = run_cv_classification(
+            bcell_features, bcell_labels, n_folds=10, random_state=random_seed, balance=True
+        )
     
     # Save results
     cv_summary = pd.DataFrame([{
@@ -1535,3 +1604,165 @@ def run_boundary_subset_analysis(
         'balanced_accuracy_std': cv_results['cv_std'],
         'n_samples': len(X)
     }
+
+
+def run_enhanced_features_visualization(
+    features_dir: str,
+    output_dir: str,
+    nuc_features: Optional[pd.DataFrame] = None
+):
+    """Run enhanced features visualization analysis.
+    
+    Args:
+        features_dir: Directory containing feature files
+        output_dir: Output directory for analysis results
+        nuc_features: Optional DataFrame with annotated features (for DZ/LZ labels)
+        
+    Returns:
+        Dictionary with visualization results
+    """
+    try:
+        from pathlib import Path
+        import glob
+        import importlib.util
+        
+        # Import visualization functions from the script
+        script_path = Path(__file__).parent.parent.parent / 'scripts' / 'visualize_enhanced_features.py'
+        if not script_path.exists():
+            logger.warning("Enhanced features visualization script not found. Skipping.")
+            return None
+        
+        # Import the visualization functions directly as a module
+        spec = importlib.util.spec_from_file_location("visualize_enhanced_features", script_path)
+        viz_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(viz_module)
+        
+        # Get the functions
+        load_features = viz_module.load_features
+        plot_feature_distributions = viz_module.plot_feature_distributions
+        plot_cell_cycle_analysis = viz_module.plot_cell_cycle_analysis
+        plot_wavelet_analysis = viz_module.plot_wavelet_analysis
+        plot_dz_lz_comparison = viz_module.plot_dz_lz_comparison
+        plot_feature_correlations = viz_module.plot_feature_correlations
+        generate_summary_statistics = viz_module.generate_summary_statistics
+        
+        # Find enhanced features CSV
+        enhanced_features_path = None
+        
+        # Try multiple possible locations
+        possible_paths = [
+            os.path.join(features_dir, '..', 'enhanced_features', 'enhanced_features.csv'),
+            os.path.join(features_dir, '..', '..', 'features_enhanced', 'enhanced_features', 'enhanced_features.csv'),
+            os.path.join(output_dir, '..', 'features_enhanced', 'enhanced_features', 'enhanced_features.csv'),
+        ]
+        
+        # Also search in the features directory
+        if os.path.exists(features_dir):
+            csv_files = glob.glob(os.path.join(features_dir, '**', 'enhanced_features.csv'), recursive=True)
+            if csv_files:
+                enhanced_features_path = csv_files[0]
+        
+        # Try the possible paths
+        if not enhanced_features_path:
+            for path in possible_paths:
+                abs_path = os.path.abspath(path)
+                if os.path.exists(abs_path):
+                    enhanced_features_path = abs_path
+                    break
+        
+        if not enhanced_features_path or not os.path.exists(enhanced_features_path):
+            logger.warning("Enhanced features CSV not found. Skipping enhanced features visualization.")
+            logger.info(f"  Searched in: {features_dir} and related directories")
+            return None
+        
+        logger.info(f"Found enhanced features at: {enhanced_features_path}")
+        
+        # Create output directory
+        enhanced_output_dir = Path(output_dir) / 'enhanced_features_analysis'
+        enhanced_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Load features
+        df = load_features(enhanced_features_path)
+        
+        # Define feature groups
+        feature_groups = {
+            'wavelet': [c for c in df.columns if 'wavelet' in c],
+            'fractal': [c for c in df.columns if 'fractal' in c],
+            'domain': [c for c in df.columns if 'domain' in c],
+            'radial': [c for c in df.columns if 'radial' in c],
+            'cell_cycle': [c for c in df.columns if 'cell_cycle' in c or 'bright_foci' in c or 'condensation' in c],
+            'spatial': [c for c in df.columns if 'voronoi' in c or 'centrality' in c or 'density' in c]
+        }
+        
+        # Determine group-by column
+        group_by = 'cell_cycle_phase' if 'cell_cycle_phase' in df.columns else None
+        
+        # Determine DZ/LZ label column if available
+        dz_label_col = None
+        if nuc_features is not None:
+            # Check if we have cell type or predicted labels
+            if 'cell_type' in nuc_features.columns:
+                # Merge cell type if possible
+                if 'nuc_id' in df.columns and 'nuc_id' in nuc_features.columns:
+                    df_merged = df.merge(
+                        nuc_features[['nuc_id', 'cell_type']],
+                        on='nuc_id',
+                        how='left'
+                    )
+                    # Create a simplified label
+                    df_merged['zone'] = df_merged['cell_type'].apply(
+                        lambda x: 'DZ' if 'DZ' in str(x) else ('LZ' if 'LZ' in str(x) else None)
+                    )
+                    if df_merged['zone'].notna().sum() > 0:
+                        df = df_merged
+                        dz_label_col = 'zone'
+            elif 'predicted' in nuc_features.columns:
+                if 'nuc_id' in df.columns and 'nuc_id' in nuc_features.columns:
+                    df = df.merge(
+                        nuc_features[['nuc_id', 'predicted']],
+                        on='nuc_id',
+                        how='left'
+                    )
+                    dz_label_col = 'predicted'
+        
+        # Generate plots
+        logger.info("  Generating feature distribution plots...")
+        plot_feature_distributions(
+            df, feature_groups, enhanced_output_dir,
+            group_col=group_by
+        )
+        
+        logger.info("  Generating cell cycle analysis...")
+        plot_cell_cycle_analysis(df, enhanced_output_dir)
+        
+        logger.info("  Generating wavelet analysis...")
+        plot_wavelet_analysis(df, enhanced_output_dir)
+        
+        if dz_label_col and dz_label_col in df.columns:
+            logger.info(f"  Generating DZ/LZ comparison using '{dz_label_col}' column...")
+            plot_dz_lz_comparison(df, enhanced_output_dir, dz_label_col)
+        
+        logger.info("  Generating correlation matrix...")
+        plot_feature_correlations(df, enhanced_output_dir)
+        
+        logger.info("  Generating summary statistics...")
+        generate_summary_statistics(df, enhanced_output_dir)
+        
+        logger.info(f"Enhanced features visualization complete! Figures saved to {enhanced_output_dir}")
+        
+        return {
+            'output_dir': str(enhanced_output_dir),
+            'n_features': len(df.columns),
+            'n_cells': len(df),
+            'figures_generated': True
+        }
+        
+    except ImportError as e:
+        logger.warning(f"Could not import enhanced features visualization functions: {e}")
+        logger.warning("Skipping enhanced features visualization.")
+        return None
+    except Exception as e:
+        logger.warning(f"Error generating enhanced features visualization: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return None

@@ -77,6 +77,29 @@ analysis:
   generate_plots: true  # Generate visualization plots
   n_permutations: 10000  # Number of permutations for statistical tests
   
+  # MLOps Configuration
+  mlops:
+    # MLflow experiment tracking
+    mlflow:
+      enabled: false  # Set to true to enable MLflow tracking
+      experiment_name: "germinal_center_dataset1"
+      tracking_uri: "file:./mlruns"  # or "http://localhost:5000" for remote server
+      log_models: true
+      log_artifacts: true
+    
+    # Model comparison settings
+    model_comparison:
+      enabled: true  # Compare multiple models
+      models:
+        - "random_forest"
+        - "xgboost"
+        # - "lightgbm"  # Requires: pip install lightgbm
+        # - "logistic_regression"
+        # - "svm"
+      tune_hyperparameters: false  # Set to true for hyperparameter tuning
+      n_iter: 50  # Number of iterations for hyperparameter search
+      balance_method: "undersample"  # undersample, oversample, smote, none
+  
   # Spatial analysis parameters
   spatial_parameters:
     pixel_size: 0.3225  # microns per pixel
@@ -94,6 +117,7 @@ analysis:
   raw_image_dir: "data/dataset1/images/raw/merged"
   
   # Analysis types to run
+  # Note: enhanced_visualization is automatically added when enhanced features are detected
   analyses:
     # Cell type detection using GMM thresholding on marker intensities
     - type: "cell_type_detection"
@@ -154,6 +178,11 @@ analysis:
     - type: "markers"
       enabled: true
       description: "Find significantly different features between groups"
+    
+    # Enhanced features visualization (automatically enabled when enhanced features are used)
+    - type: "enhanced_visualization"
+      enabled: true
+      description: "Enhanced features visualization (wavelet, fractal, cell cycle analysis)"
     
     # Correlation analysis (requires metadata file)
     - type: "correlation"

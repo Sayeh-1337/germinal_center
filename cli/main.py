@@ -334,7 +334,8 @@ Examples:
         choices=[
             'cell_type_detection', 'cell_type', 'classification',
             'tcell_interaction', 'tcell', 'boundary', 'dz_lz_boundary',
-            'correlation', 'umap', 'visualization', 'markers', 'differential', 'all'
+            'correlation', 'umap', 'visualization', 'markers', 'differential',
+            'enhanced_visualization', 'enhanced_features', 'all'
         ],
         nargs='+',
         default=['cell_type'],
@@ -346,6 +347,7 @@ Examples:
              'correlation (feature-metadata correlation), '
              'umap/visualization (UMAP embedding & clustering), '
              'markers/differential (marker feature detection), '
+             'enhanced_visualization/enhanced_features (enhanced features visualization), '
              'all (run all analyses)'
     )
     analyze_parser.add_argument(

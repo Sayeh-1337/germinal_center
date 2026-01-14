@@ -1710,9 +1710,15 @@ def run_enhanced_features_visualization(
                         how='left'
                     )
                     # Create a simplified label
-                    df_merged['zone'] = df_merged['cell_type'].apply(
-                        lambda x: 'DZ' if 'DZ' in str(x) else ('LZ' if 'LZ' in str(x) else None)
-                    )
+                    def map_zone(x):
+                        x_str = str(x)
+                        if 'DZ' in x_str:
+                            return 'DZ'
+                        elif 'LZ' in x_str:
+                            return 'LZ'
+                        else:
+                            return None
+                    df_merged['zone'] = df_merged['cell_type'].apply(map_zone)
                     if df_merged['zone'].notna().sum() > 0:
                         df = df_merged
                         dz_label_col = 'zone'

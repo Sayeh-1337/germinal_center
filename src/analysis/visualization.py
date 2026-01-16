@@ -568,7 +568,9 @@ def plot_cell_type_distribution(
             x=cell_type_col,
             ax=ax,
             order=order,
-            palette=colors
+            hue=cell_type_col,
+            palette=colors,
+            legend=False
         )
     
     ax.set_xlabel('Cell Type')
@@ -676,7 +678,19 @@ def plot_roc_binary(
         logger.error("matplotlib or sklearn not installed")
         raise
     
-    fpr, tpr, thresholds = roc_curve(y_true, y_scores, pos_label=pos_label)
+    # Handle pos_label - if y_true is numeric/boolean, pos_label should be numeric too
+    y_true_array = np.array(y_true)
+    if y_true_array.dtype == bool or (y_true_array.dtype in [np.int64, np.int32] and set(np.unique(y_true_array)).issubset({0, 1})):
+        # y_true is already encoded, use pos_label=1 (or convert pos_label to numeric)
+        if isinstance(pos_label, str):
+            # Try to infer: if pos_label is a string but y_true is numeric, assume pos_label=1
+            pos_label_num = 1
+        else:
+            pos_label_num = pos_label
+        fpr, tpr, thresholds = roc_curve(y_true_array, y_scores, pos_label=pos_label_num)
+    else:
+        # y_true contains string labels, use pos_label as-is
+        fpr, tpr, thresholds = roc_curve(y_true_array, y_scores, pos_label=pos_label)
     roc_auc = auc(fpr, tpr)
     
     fig, ax = plt.subplots(figsize=figsize)
@@ -1479,8 +1493,9 @@ def plot_tcell_fraction_comparison(
         'Zone': ['DZ'] * len(dz_fractions) + ['LZ'] * len(lz_fractions)
     })
     
-    sns.barplot(data=plot_data1, x='Zone', y='Fraction', ax=axes[0], 
-                palette=['#E74C3C', '#3498DB'], capsize=0.1, errwidth=1.5, ci='sd')
+                sns.barplot(data=plot_data1, x='Zone', y='Fraction', hue='Zone', ax=axes[0], 
+                palette=['#E74C3C', '#3498DB'], capsize=0.1, errorbar='sd', 
+                err_kws={'linewidth': 1.5}, legend=False)
     
     # Add statistical annotation
     stat, pval = stats.ttest_ind(dz_fractions, lz_fractions, equal_var=False)
@@ -1514,8 +1529,9 @@ def plot_tcell_fraction_comparison(
             'Zone': ['DZ'] * len(dz_of_interactors) + ['LZ'] * len(lz_of_interactors)
         })
         
-        sns.barplot(data=plot_data2, x='Zone', y='Fraction', ax=axes[1],
-                    palette=['#E74C3C', '#3498DB'], capsize=0.1, errwidth=1.5, ci='sd')
+        sns.barplot(data=plot_data2, x='Zone', y='Fraction', hue='Zone', ax=axes[1],
+                    palette=['#E74C3C', '#3498DB'], capsize=0.1, errorbar='sd',
+                    err_kws={'linewidth': 1.5}, legend=False)
         
         # Statistical test
         stat2, pval2 = stats.ttest_ind(dz_of_interactors, lz_of_interactors, equal_var=False)

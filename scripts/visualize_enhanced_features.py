@@ -63,6 +63,16 @@ def plot_feature_distributions(
         valid_features = [f for f in features if f in df.columns]
         if not valid_features:
             logger.warning(f"No valid features for category: {category}")
+            # Create an empty plot with a message instead of skipping
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.text(0.5, 0.5, f'No {category} features found in data', 
+                   ha='center', va='center', fontsize=14, 
+                   transform=ax.transAxes)
+            ax.set_title(f'{category.capitalize()} Features Distribution')
+            output_path = output_dir / f"distributions_{category}.png"
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Saved empty plot with message: {output_path}")
             continue
         
         n_features = len(valid_features)
@@ -82,22 +92,33 @@ def plot_feature_distributions(
             if group_col and group_col in df.columns:
                 # Stratified by group
                 groups = df[group_col].dropna().unique()
-                for group in groups:
+                # Use distinct colors and lower alpha to reduce overlap
+                colors = plt.cm.Set3(np.linspace(0, 1, len(groups)))
+                for group_idx, group in enumerate(groups):
                     data = df[df[group_col] == group][feature].dropna()
                     if len(data) > 0:
-                        ax.hist(data, alpha=0.6, label=str(group), bins=30)
-                ax.legend()
-                ax.set_title(f"{feature}\n(stratified by {group_col})")
+                        ax.hist(data, alpha=0.5, label=str(group), bins=30, 
+                               color=colors[group_idx], edgecolor='black', linewidth=0.5)
+                if len(groups) > 0:  # Only add legend if there are groups
+                    ax.legend(loc='best', fontsize=8)
+                ax.set_title(f"{feature}\n(stratified by {group_col})", fontsize=10)
             else:
                 # Single distribution
                 data = df[feature].dropna()
                 if len(data) > 0:
-                    ax.hist(data, bins=30, alpha=0.7, edgecolor='black')
-                    ax.set_title(feature)
+                    ax.hist(data, bins=30, alpha=0.8, edgecolor='black', linewidth=0.5, color='steelblue')
+                    ax.set_title(feature, fontsize=10)
                     mean_val = data.mean()
-                    ax.axvline(mean_val, color='red', linestyle='--', 
+                    median_val = data.median()
+                    ax.axvline(mean_val, color='red', linestyle='--', linewidth=1.5,
                               label=f'Mean: {mean_val:.3f}')
-                    ax.legend()
+                    ax.axvline(median_val, color='blue', linestyle='--', linewidth=1.5,
+                              label=f'Median: {median_val:.3f}')
+                    ax.legend(fontsize=8, loc='best')
+                else:
+                    ax.text(0.5, 0.5, 'No data', ha='center', va='center', 
+                           transform=ax.transAxes, fontsize=12)
+                    ax.set_title(feature)
             
             ax.set_xlabel('Value')
             ax.set_ylabel('Frequency')
@@ -292,10 +313,13 @@ def plot_dz_lz_comparison(
         
         if data_to_plot:
             bp = ax.boxplot(data_to_plot, labels=labels_to_plot, patch_artist=True)
-            colors = ['#E74C3C', '#3498DB']  # Red for DZ, Blue for LZ
+            # Use distinct colors with better contrast
+            colors = ['#E74C3C', '#3498DB', '#2ECC71', '#F39C12', '#9B59B6']  # Red, Blue, Green, Orange, Purple
             for patch, color in zip(bp['boxes'], colors[:len(bp['boxes'])]):
                 patch.set_facecolor(color)
-                patch.set_alpha(0.7)
+                patch.set_alpha(0.8)  # Slightly higher alpha for better visibility
+                patch.set_edgecolor('black')
+                patch.set_linewidth(1.2)
             
             ax.set_title(feature)
             ax.set_ylabel('Value')
@@ -448,7 +472,10 @@ Examples:
         'domain': [c for c in df.columns if 'domain' in c],
         'radial': [c for c in df.columns if 'radial' in c],
         'cell_cycle': [c for c in df.columns if 'cell_cycle' in c or 'bright_foci' in c or 'condensation' in c],
-        'spatial': [c for c in df.columns if 'voronoi' in c or 'centrality' in c or 'density' in c]
+        'spatial': [c for c in df.columns if any(keyword in c.lower() for keyword in [
+            'voronoi', 'centrality', 'density', 'degree', 'clustering', 
+            'betweenness', 'pagerank', 'morans', 'neighbor', 'gradient'
+        ])]
     }
     
     # Generate plots

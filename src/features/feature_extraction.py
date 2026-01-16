@@ -40,7 +40,11 @@ def run_nuclear_chromatin_feat_ext(
     measure_gclm_features: bool = True,
     measure_moments_features: bool = True,
     normalize: bool = False,
-    save_output: bool = False
+    save_output: bool = False,
+    # Optional pre-computed inputs to avoid duplicate computation
+    raw_image: np.ndarray = None,
+    labelled_image: np.ndarray = None,
+    props: list = None
 ):
     """Extract nuclear chromatin features from raw and labelled images.
     
@@ -49,8 +53,8 @@ def run_nuclear_chromatin_feat_ext(
     texture, and boundary curvature.
     
     Args:
-        raw_image_path: Path to raw image file
-        labelled_image_path: Path to segmented label image
+        raw_image_path: Path to raw image file (required if raw_image not provided)
+        labelled_image_path: Path to segmented label image (required if labelled_image not provided)
         output_dir: Output directory for results
         calliper_angular_resolution: Angular resolution for calliper calculation
         measure_simple_geometry: Compute simple morphology features
@@ -68,6 +72,9 @@ def run_nuclear_chromatin_feat_ext(
         measure_moments_features: Compute moments features
         normalize: Normalize raw image before processing
         save_output: Save features to CSV file
+        raw_image: Pre-computed raw image array (optional, avoids re-reading)
+        labelled_image: Pre-computed label image array (optional, avoids re-reading)
+        props: Pre-computed regionprops list (optional, avoids duplicate computation)
         
     Returns:
         DataFrame with features for all nuclei in the image
@@ -75,20 +82,25 @@ def run_nuclear_chromatin_feat_ext(
     if gclm_lengths is None:
         gclm_lengths = [1, 5, 20]
     
-    # Read images
-    labelled_image = imread(labelled_image_path).astype(int)
-    raw_image = imread(raw_image_path).astype(int)
-    
-    # Normalize if requested
-    if normalize:
-        raw_image = cv.normalize(
-            raw_image, None, alpha=0, beta=255,
-            norm_type=cv.NORM_MINMAX, dtype=cv.CV_32F
-        )
-        raw_image = np.clip(raw_image, 0, 255)
-    
-    # Get region properties
-    props = measure.regionprops(labelled_image, raw_image)
+    # Use pre-computed images/props if provided, otherwise read from files
+    if props is None:
+        # Use pre-computed images if provided, otherwise read from files
+        if raw_image is None:
+            raw_image = imread(raw_image_path).astype(int)
+        
+        if labelled_image is None:
+            labelled_image = imread(labelled_image_path).astype(int)
+        
+        # Normalize if requested (only if not already normalized)
+        if normalize:
+            raw_image = cv.normalize(
+                raw_image, None, alpha=0, beta=255,
+                norm_type=cv.NORM_MINMAX, dtype=cv.CV_32F
+            )
+            raw_image = np.clip(raw_image, 0, 255).astype(int)
+        
+        # Get region properties
+        props = measure.regionprops(labelled_image, raw_image)
     
     if len(props) == 0:
         logger.warning(f"No regions found in {labelled_image_path}")

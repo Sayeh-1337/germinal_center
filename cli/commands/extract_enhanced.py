@@ -184,15 +184,37 @@ def extract_enhanced_features(
             pbar_images.set_description(f"Processing {img_name}")
         
         try:
+            # Read images once (reused for both base and enhanced features)
+            raw_image = imread(raw_file)
+            label_image = imread(label_file)
+            
+            # Normalize raw image (required for base features)
+            import cv2 as cv
+            raw_image_normalized = cv.normalize(
+                raw_image, None, alpha=0, beta=255,
+                norm_type=cv.NORM_MINMAX, dtype=cv.CV_32F
+            )
+            raw_image_normalized = np.clip(raw_image_normalized, 0, 255).astype(int)
+            
+            # Compute regionprops once (reused for both base and enhanced features)
+            props = measure.regionprops(label_image.astype(int), raw_image_normalized)
+            
+            if len(props) == 0:
+                logger.warning(f"No regions found in {filename}")
+                continue
+            
             # ===== Standard chrometric features =====
             if pbar_images:
                 pbar_images.set_postfix_str("Extracting base features...")
             features = run_nuclear_chromatin_feat_ext(
-                raw_file,
-                label_file,
-                features_dir,
-                normalize=True,
+                raw_image_path=raw_file,
+                labelled_image_path=label_file,
+                output_dir=features_dir,
+                normalize=False,  # Already normalized above, props already computed
                 save_output=False,
+                raw_image=raw_image_normalized,
+                labelled_image=label_image.astype(int),
+                props=props  # Pass pre-computed props to avoid duplicate computation
             )
             
             if features.empty:
@@ -209,10 +231,7 @@ def extract_enhanced_features(
             # ===== Enhanced features =====
             enhanced_features = pd.DataFrame()
             
-            # Read images for enhanced analysis
-            raw_image = imread(raw_file)
-            label_image = imread(label_file)
-            props = measure.regionprops(label_image, raw_image)
+            # Use the same props we already computed (no duplicate computation)
             
             if extract_multiscale:
                 if pbar_images:
@@ -388,7 +407,21 @@ def extract_enhanced_features(
                     if not graph_feat.empty:
                         graph_feat['image'] = str(img_name)
                         graph_feat['nuc_id'] = img_spatial['nuc_id'].astype(str).values
-                        all_enhanced = pd.concat([all_enhanced, graph_feat], ignore_index=True)
+                        
+                        # Merge with existing enhanced features instead of concatenating
+                        if not all_enhanced.empty and 'nuc_id' in all_enhanced.columns:
+                            # Ensure consistent types before merge
+                            all_enhanced['nuc_id'] = all_enhanced['nuc_id'].astype(str)
+                            all_enhanced['image'] = all_enhanced['image'].astype(str)
+                            graph_feat['nuc_id'] = graph_feat['nuc_id'].astype(str)
+                            graph_feat['image'] = graph_feat['image'].astype(str)
+                            
+                            all_enhanced = pd.merge(
+                                all_enhanced, graph_feat,
+                                on=['image', 'nuc_id'], how='outer'
+                            )
+                        else:
+                            all_enhanced = pd.concat([all_enhanced, graph_feat], ignore_index=True)
                 
                 if extract_relative:
                     if pbar_spatial:
@@ -555,37 +588,54 @@ def extract_enhanced_features(
         logger.info(f"GC mask intensities saved to {os.path.join(consolidated_dir, 'gc_levels.csv')}")
     
     # ===== Save consolidated outputs =====
-    all_features.to_csv(os.path.join(consolidated_dir, "nuc_features.csv"), index=False)
+    # Always save consolidated outputs, even when resuming (ensures updates are reflected)
+    logger.info("Saving consolidated feature files...")
+    
+    if not all_features.empty:
+        all_features.to_csv(os.path.join(consolidated_dir, "nuc_features.csv"), index=False)
+        logger.info(f"Saved {len(all_features)} base feature records to nuc_features.csv")
+    else:
+        logger.warning("No base features to save")
     
     if extract_spatial and not all_spatial.empty:
         all_spatial.to_csv(os.path.join(consolidated_dir, "spatial_coordinates.csv"), index=False)
+        logger.info(f"Saved {len(all_spatial)} spatial coordinate records")
+    elif extract_spatial:
+        logger.warning("No spatial coordinates to save")
     
     if not all_enhanced.empty:
         # Remove duplicate columns
         all_enhanced = all_enhanced.loc[:, ~all_enhanced.columns.duplicated()]
         all_enhanced.to_csv(os.path.join(enhanced_dir, "enhanced_features.csv"), index=False)
+        logger.info(f"Saved {len(all_enhanced)} enhanced feature records to enhanced_features.csv")
         
         # Ensure consistent types for merge keys (fix int64 vs object mismatch)
-        if 'nuc_id' in all_features.columns:
-            all_features['nuc_id'] = all_features['nuc_id'].astype(str)
-        if 'image' in all_features.columns:
-            all_features['image'] = all_features['image'].astype(str)
+        if not all_features.empty:
+            if 'nuc_id' in all_features.columns:
+                all_features['nuc_id'] = all_features['nuc_id'].astype(str)
+            if 'image' in all_features.columns:
+                all_features['image'] = all_features['image'].astype(str)
         if 'nuc_id' in all_enhanced.columns:
             all_enhanced['nuc_id'] = all_enhanced['nuc_id'].astype(str)
         if 'image' in all_enhanced.columns:
             all_enhanced['image'] = all_enhanced['image'].astype(str)
         
         # Merge all features
-        try:
-            merged_features = pd.merge(all_features, all_enhanced, on=['image', 'nuc_id'], how='left')
-            merged_features.to_csv(os.path.join(consolidated_dir, "all_features_merged.csv"), index=False)
-            logger.info(f"Merged features saved to {os.path.join(consolidated_dir, 'all_features_merged.csv')}")
-        except Exception as e:
-            logger.warning(f"Could not merge features: {e}")
-            # Save separately as fallback
-            all_features.to_csv(os.path.join(consolidated_dir, "nuc_features_only.csv"), index=False)
-            all_enhanced.to_csv(os.path.join(consolidated_dir, "enhanced_features_only.csv"), index=False)
-            logger.info("Saved features separately due to merge failure")
+        if not all_features.empty:
+            try:
+                merged_features = pd.merge(all_features, all_enhanced, on=['image', 'nuc_id'], how='left')
+                merged_features.to_csv(os.path.join(consolidated_dir, "all_features_merged.csv"), index=False)
+                logger.info(f"Merged features saved to {os.path.join(consolidated_dir, 'all_features_merged.csv')} ({len(merged_features)} records)")
+            except Exception as e:
+                logger.warning(f"Could not merge features: {e}")
+                # Save separately as fallback
+                all_features.to_csv(os.path.join(consolidated_dir, "nuc_features_only.csv"), index=False)
+                all_enhanced.to_csv(os.path.join(consolidated_dir, "enhanced_features_only.csv"), index=False)
+                logger.info("Saved features separately due to merge failure")
+        else:
+            logger.warning("Cannot merge: no base features available")
+    else:
+        logger.warning("No enhanced features to save")
     
     # Save final state
     if state:

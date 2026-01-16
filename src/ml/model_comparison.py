@@ -83,6 +83,10 @@ class ModelComparison:
         # Feature names (set during comparison)
         self.feature_names: Optional[List[str]] = None
         
+        # Label encoder (for string to numeric conversion)
+        self.label_encoder: Optional[Any] = None
+        self.label_classes: Optional[np.ndarray] = None
+        
     def compare_models(
         self,
         X: pd.DataFrame,
@@ -106,6 +110,27 @@ class ModelComparison:
         
         # Store feature names
         self.feature_names = list(X.columns)
+        
+        # Encode string labels to numeric (required for XGBoost and some other models)
+        from sklearn.preprocessing import LabelEncoder
+        y_array = y.values if hasattr(y, 'values') else np.array(y)
+        
+        # Check if labels are strings/objects and need encoding
+        if len(y_array) > 0 and (y_array.dtype == object or (len(y_array) > 0 and isinstance(y_array[0], str))):
+            self.label_encoder = LabelEncoder()
+            y_encoded = self.label_encoder.fit_transform(y_array)
+            self.label_classes = self.label_encoder.classes_
+            logger.info(f"Encoded labels: {dict(zip(self.label_classes, range(len(self.label_classes))))}")
+        else:
+            self.label_encoder = None
+            self.label_classes = np.unique(y_array)
+            y_encoded = y_array
+        
+        # Convert back to same type as input
+        if hasattr(y, 'values'):
+            y = pd.Series(y_encoded, index=y.index if hasattr(y, 'index') else None)
+        else:
+            y = y_encoded
         
         # Balance dataset if requested
         if self.balance:
@@ -252,7 +277,9 @@ class ModelComparison:
             'predictions': y_pred,
             'probabilities': y_proba,
             'true_labels': y_array,
-            'classes': final_model.classes_ if hasattr(final_model, 'classes_') else np.unique(y_array),
+            'classes': self.label_classes if self.label_encoder is not None else (
+                final_model.classes_ if hasattr(final_model, 'classes_') else np.unique(y_array)
+            ),
             'fold_metrics': fold_metrics
         }
         
